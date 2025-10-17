@@ -1,103 +1,124 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+
+type SpinResp = {
+  ok: boolean;
+  coin?: any;
+  details?: { swaps: any[]; comments: any[]; holders: any[] };
+  error?: string;
+};
+
+function compact(n?: number) {
+  if (n == null || isNaN(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e12) return (n / 1e12).toFixed(2) + "T";
+  if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (n / 1e3).toFixed(2) + "K";
+  return n.toFixed(2).replace(/\.00$/, "");
+}
+function pct(v?: number) {
+  if (v == null || isNaN(v)) return "N/A";
+  const s = v > 0 ? "+" : "";
+  return `${s}${v.toFixed(2)}%`;
+}
+function timeAgo(ts: number) {
+  const d = Math.max(0, Date.now() - ts);
+  const s = Math.floor(d / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  if (days < 30) return `${days}d ago`;
+  const mon = Math.floor(days / 30);
+  if (mon < 12) return `${mon}mo ago`;
+  const yrs = Math.floor(mon / 12);
+  return `${yrs}y ago`;
+}
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<SpinResp | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
+  async function spin() {
+    setLoading(true);
+    const r = await fetch("/api/spin", { cache: "no-store" });
+    const j: SpinResp = await r.json();
+    setData(j);
+    setLoading(false);
+  }
+
+  const c = data?.coin;
+
+  return (
+    <main className="min-h-screen bg-black text-white flex flex-col items-center p-6">
+      <div className="text-3xl font-bold mt-6">🎰 Zora Roulette — Web</div>
+      <p className="text-sm text-neutral-400 mt-2">Live coin picker with Zora Coins SDK</p>
+
+      <button
+        onClick={spin}
+        disabled={loading}
+        className="mt-6 px-6 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-black font-semibold disabled:opacity-60"
+      >
+        {loading ? "Spinning..." : "Spin"}
+      </button>
+
+      {data && !data.ok && (
+        <div className="mt-6 text-red-400">Error: {data.error}</div>
+      )}
+
+      {c && (
+        <div className="mt-8 w-full max-w-2xl rounded-2xl border border-white/10 p-5 bg-white/5">
+          <div className="text-xl font-semibold">
+            {c.name} {c.symbol ? `(${c.symbol})` : ""}
+          </div>
+          <div className="text-neutral-400 text-xs break-all">0x{c.address?.replace(/^0x/, "")}</div>
+
+          <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+            <div className="bg-white/5 rounded-xl p-3">
+              <div className="text-neutral-400">Market Cap</div>
+              <div className="text-cyan-300 font-semibold">{compact(Number(c.marketCap))}</div>
+            </div>
+            <div className="bg-white/5 rounded-xl p-3">
+              <div className="text-neutral-400">24h Volume</div>
+              <div className="text-pink-300 font-semibold">{compact(Number(c.volume24h))}</div>
+            </div>
+            <div className="bg-white/5 rounded-xl p-3">
+              <div className="text-neutral-400">Holders</div>
+              <div className="text-yellow-300 font-semibold">{compact(Number(c.uniqueHolders))}</div>
+            </div>
+            <div className="bg-white/5 rounded-xl p-3">
+              <div className="text-neutral-400">24h Cap Δ</div>
+              <div className={(Number(c.marketCapDelta24h) > 0 ? "text-emerald-300" : "text-red-300") + " font-semibold"}>
+                {pct(Number(c.marketCapDelta24h ?? c.change24h))}
+              </div>
+            </div>
+          </div>
+
+          {c.createdAt && (
+            <div className="mt-3 text-xs text-neutral-400">
+              Created:{" "}
+              {new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(c.createdAt))
+                .toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}
+              {" • "}
+              {timeAgo(typeof c.createdAt === "number" ? c.createdAt : Date.parse(c.createdAt))}
+            </div>
+          )}
+
           <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
+            href={c.address ? `https://zora.co/coin/${c.address}` : "https://zora.co/coins"}
             target="_blank"
-            rel="noopener noreferrer"
+            className="inline-block mt-4 text-cyan-400 underline"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
+            View on Zora →
           </a>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      )}
+
+      <div className="mt-10 text-xs text-neutral-500">Not financial advice — just onchain vibes.</div>
+    </main>
   );
 }
