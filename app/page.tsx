@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 
-/* ---------- Types ---------- */
+/* ---------- Types (Tipler) ---------- */
 type Coin = {
   name: string;
   symbol?: string;
@@ -37,7 +37,7 @@ type HolderRow = {
 type HoldersPayload = HolderRow[] | { top10: HolderRow[] } | null | undefined;
 
 type DetailsBlock = {
-  swaps?: unknown[]; // normalize edeceğiz
+  swaps?: unknown[];
   comments?: CommentUI[];
   holders?: HoldersPayload;
 };
@@ -52,9 +52,9 @@ type SpinResp = {
 type LogLevel = "ok" | "warn" | "info";
 type LogLine = { t: string; type: LogLevel };
 
-/* ---------- Helpers ---------- */
+/* ---------- Helpers (Yardımcı Fonksiyonlar) ---------- */
 function compact(n?: number | string) {
-  const x = typeof n === "string" ? Number(n) : n;
+  const x = typeof n === "string" ? Number(n.toString().replace(/,/g, '')) : n;
   if (x == null || Number.isNaN(x)) return "—";
   const a = Math.abs(x);
   if (a >= 1e12) return (x / 1e12).toFixed(2) + "T";
@@ -72,7 +72,6 @@ function isSecondEpoch(t: number) {
   return t > 0 && t < 1e12;
 }
 
-/** gevşek epoch çevirici — geçersizse null döner (1970 yok) */
 function toEpochMsLoose(v: number | string): number | null {
   if (typeof v === "number") {
     const ms = isSecondEpoch(v) ? v * 1000 : v;
@@ -81,13 +80,11 @@ function toEpochMsLoose(v: number | string): number | null {
   if (typeof v === "string") {
     const trimmed = v.trim();
     if (!trimmed) return null;
-    // sayıysa
     const n = Number(trimmed.replaceAll(",", ""));
     if (Number.isFinite(n)) {
       const ms = isSecondEpoch(n) ? n * 1000 : n;
       return ms > 0 ? ms : null;
     }
-    // ISO tarihse
     const p = Date.parse(trimmed);
     return Number.isFinite(p) && p > 0 ? p : null;
   }
@@ -130,7 +127,7 @@ function formatUSD(v?: number | string): string {
   return "~$" + n.toFixed(2);
 }
 
-/* ---------- Swap normalizer (no any) ---------- */
+/* ---------- Swap Normalizer (Veri Ayıklama Fonksiyonları) ---------- */
 type UnknownSwap = Record<string, unknown>;
 
 function pickStr(obj: UnknownSwap, keys: string[]): string | undefined {
@@ -155,7 +152,6 @@ function numFromUnknown(u: unknown): number | undefined {
   }
   if (u && typeof u === "object") {
     const o = u as Record<string, unknown>;
-    // display/raw/value/usd gibi sık gelen alanlar
     const candidates = ["raw", "value", "amount", "display", "usd", "usdValue"];
     for (const c of candidates) {
       const v = o[c];
@@ -177,59 +173,21 @@ function pickNum(obj: UnknownSwap, keys: string[]): number | undefined {
 }
 
 function coerceSwap(s: UnknownSwap): SwapUI {
-  // side
   const action = pickStr(s, ["side", "action", "type", "tradeType", "takerSide"])?.toUpperCase();
   const isBuy = pickBool(s, ["isBuy", "buy"]);
   const side: "BUY" | "SELL" | undefined =
-    action === "BUY" || action === "SELL"
-      ? (action as "BUY" | "SELL")
-      : isBuy === true
-        ? "BUY"
-        : isBuy === false
-          ? "SELL"
+    action === "BUY" || action === "SELL" ? (action as "BUY" | "SELL")
+      : isBuy === true ? "BUY"
+        : isBuy === false ? "SELL"
           : undefined;
 
-  // amount (token miktarı)
-  const amount =
-    pickNum(s, [
-      "amount",
-      "qty",
-      "quantity",
-      "tokenAmount",
-      "tokenQty",
-      "baseAmount",
-      "baseQty",
-      "size",
-      "amountIn",
-      "amountOut",
-    ]) ?? undefined;
-
-  // usd (para karşılığı)
-  const usd =
-    pickNum(s, [
-      "usd",
-      "usdValue",
-      "valueUsd",
-      "quoteUsd",
-      "usd_amount",
-      "quoteAmountUsd",
-      "amountUsd",
-      "amountInUsd",
-      "amountOutUsd",
-      "priceUsd",
-    ]) ?? undefined;
-
-  // timestamp (saniye/ms/ISO)
-  const tsRaw =
-    pickNum(s, ["ts", "timestamp", "time", "createdAt", "blockTime"]) ??
-    (pickStr(s, ["ts", "timestamp", "time", "createdAt", "blockTimestamp", "date", "datetime"]) as
-      | string
-      | undefined);
-
+  const amount = pickNum(s, ["amount", "qty", "quantity", "tokenAmount", "tokenQty", "baseAmount", "baseQty", "size", "amountIn", "amountOut"]) ?? undefined;
+  const usd = pickNum(s, ["usd", "usdValue", "valueUsd", "quoteUsd", "usd_amount", "quoteAmountUsd", "amountUsd", "amountInUsd", "amountOutUsd", "priceUsd"]) ?? undefined;
+  const tsRaw = pickNum(s, ["ts", "timestamp", "time", "createdAt", "blockTime"]) ?? (pickStr(s, ["ts", "timestamp", "time", "createdAt", "blockTimestamp", "date", "datetime"]) as string | undefined);
   return { side, amount, usd, ts: tsRaw };
 }
 
-/* ---------- Component ---------- */
+/* ---------- Component (Ana Arayüz Bileşeni) ---------- */
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SpinResp | null>(null);
@@ -237,7 +195,7 @@ export default function Home() {
 
   const [verbose, setVerbose] = useState<boolean>(true);
   const [log, setLog] = useState<LogLine[]>([
-    { t: "💫 Live terminal ready. Press SPIN.", type: "info" },
+    { t: "💫 Canlı terminal hazır. SPIN'e bas.", type: "info" },
   ]);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -259,25 +217,33 @@ export default function Home() {
     try {
       setLoading(true);
       wheelRef.current?.classList.add("spinning");
-      pushLog({ t: `[${nowHHMMSS()}] 🎰 Spinning…`, type: "info" });
+      pushLog({ t: `[${nowHHMMSS()}] 🎰 Çevriliyor…`, type: "info" });
 
       const r = await fetch("/api/spin", { cache: "no-store" });
       const j: SpinResp = await r.json();
 
       if (!j.ok) {
-        pushLog({ t: `[${nowHHMMSS()}] ⚠ spin failed: ${j.error ?? "unexpected-error"}`, type: "warn" });
+        pushLog({ t: `[${nowHHMMSS()}] ⚠ Çevirme başarısız: ${j.error ?? "beklenmedik-hata"}`, type: "warn" });
         setData(j);
         return;
       }
 
-      // swaps'ı burada da normalle ve UI'ya yaz
+      // --- HATA AYIKLAMA İÇİN EKLENDİ ---
+      // API'den gelen ilk swap objesinin yapısını görmek için konsola yazdırıyoruz.
+      // Bu, `coerceSwap` fonksiyonundaki anahtar (key) listelerini doğru ayarlamanıza yardımcı olacak.
+      if (Array.isArray(j.details?.swaps) && j.details.swaps.length > 0) {
+        console.log("API'den gelen ilk swap verisi:", j.details.swaps[0]);
+      }
+      // ------------------------------------
+
       const normalizedSwaps: SwapUI[] = Array.isArray(j.details?.swaps)
         ? (j.details!.swaps as unknown[]).slice(0, 10).map((x) => coerceSwap(x as Record<string, unknown>))
         : [];
 
       setData({
         ...j,
-        details: { ...j.details, swaps: normalizedSwaps },
+        // Potansiyel çökme hatasını önlemek için `j.details` null ise boş obje kullanılıyor.
+        details: { ...(j.details ?? {}), swaps: normalizedSwaps },
       });
 
       setSpins((s) => s + 1);
@@ -290,7 +256,7 @@ export default function Home() {
 
       if (verbose) {
         if (c.address) {
-          pushLog({ t: `↳ address: ${shortAddr(c.address)} • link: https://zora.co/coin/${c.address}`, type: "info" });
+          pushLog({ t: `↳ adres: ${shortAddr(c.address)} • link: https://zora.co/coin/${c.address}`, type: "info" });
         }
         const createdMs =
           c.createdAt != null
@@ -299,17 +265,17 @@ export default function Home() {
         if (createdMs) {
           const d = new Date(createdMs);
           pushLog({
-            t: `↳ created: ${d.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}`,
+            t: `↳ oluşturulma: ${d.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}`,
             type: "info",
           });
         }
         const buys = normalizedSwaps.filter((s) => (s.side ?? "BUY") === "BUY").length;
         const sells = normalizedSwaps.length - buys;
-        pushLog({ t: `↳ swaps(top10): ${normalizedSwaps.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
+        pushLog({ t: `↳ işlemler(ilk 10): ${normalizedSwaps.length} (↑ ALIM ${buys} / ↓ SATIM ${sells})`, type: "info" });
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      pushLog({ t: `[${nowHHMMSS()}] ⚠ spin failed: ${msg}`, type: "warn" });
+      pushLog({ t: `[${nowHHMMSS()}] ⚠ Çevirme başarısız: ${msg}`, type: "warn" });
     } finally {
       setLoading(false);
       setTimeout(() => wheelRef.current?.classList.remove("spinning"), 350);
@@ -319,18 +285,18 @@ export default function Home() {
   async function share() {
     const c = data?.coin;
     if (!c?.address) {
-      setToast("No coin to share.");
+      setToast("Paylaşılacak bir coin yok.");
       setTimeout(() => setToast(null), 1200);
       return;
     }
     const url = `https://zora.co/coin/${c.address}`;
     try {
       await navigator.clipboard.writeText(url);
-      setToast("Link copied!");
-      pushLog({ t: `🔗 Copied: ${url}`, type: "info" });
+      setToast("Link kopyalandı!");
+      pushLog({ t: `🔗 Kopyalandı: ${url}`, type: "info" });
     } catch {
       window.alert(url);
-      setToast("Link ready!");
+      setToast("Link hazır!");
       pushLog({ t: `🔗 Link: ${url}`, type: "info" });
     }
     setTimeout(() => setToast(null), 1500);
@@ -359,37 +325,34 @@ export default function Home() {
 
   return (
     <main className="screen">
-      {/* Header */}
       <header className="header">
         <h1 className="title">
-          <span className="emoji">🎰</span> Zora Roulette — Web
+          <span className="emoji">🎰</span> Zora Rulet — Web
         </h1>
-        <p className="subtitle">Live coin picker with Zora GraphQL • not financial advice</p>
+        <p className="subtitle">Zora GraphQL ile canlı coin seçici • yatırım tavsiyesi değildir</p>
       </header>
 
-      {/* Roulette */}
       <section className="roulette">
         <div ref={wheelRef} className="wheel">
           <div className="ring" />
           <div className="center">
             <div className="center-copy">
-              <div className="mode">Mode</div>
-              <div className="mode-value">Volume</div>
-              <div className="spins">spins: {spins}</div>
+              <div className="mode">Mod</div>
+              <div className="mode-value">Hacim</div>
+              <div className="spins">çevirme: {spins}</div>
             </div>
           </div>
           <div className="pointer" />
         </div>
       </section>
 
-      {/* Actions */}
       <section className="toolbar">
         <div className="actions">
           <button onClick={spin} disabled={loading} className={`btn ${loading ? "busy" : ""}`}>
-            {loading ? "Spinning..." : "Spin"}
+            {loading ? "Çevriliyor..." : "Spin"}
           </button>
           <button onClick={share} className="btn secondary" disabled={!c}>
-            Share
+            Paylaş
           </button>
         </div>
 
@@ -400,23 +363,21 @@ export default function Home() {
               checked={verbose}
               onChange={(e) => setVerbose(e.target.checked)}
             />
-            <span>Verbose log</span>
+            <span>Detaylı log</span>
           </label>
           <button
             className="btn ghost"
-            onClick={() => setLog([{ t: "🧹 Log cleared.", type: "info" }])}
+            onClick={() => setLog([{ t: "🧹 Log temizlendi.", type: "info" }])}
           >
-            Clear log
+            Log'u Temizle
           </button>
         </div>
       </section>
 
-      {/* Error */}
       {data && !data.ok && (
-        <div className="error">Error: {data.error}</div>
+        <div className="error">Hata: {data.error}</div>
       )}
 
-      {/* Coin Card */}
       {c && (
         <section className="card">
           <div className="card-row">
@@ -432,25 +393,25 @@ export default function Home() {
               rel="noreferrer"
               className="link"
             >
-              View on Zora →
+              Zora'da Görüntüle →
             </a>
           </div>
 
           <div className="grid">
             <div className="metric">
-              <div className="label">Market Cap</div>
+              <div className="label">Piyasa Değeri</div>
               <div className="value cyan">{compact(c.marketCap)}</div>
             </div>
             <div className="metric">
-              <div className="label">24h Volume</div>
+              <div className="label">24s Hacim</div>
               <div className="value pink">{compact(c.volume24h)}</div>
             </div>
             <div className="metric">
-              <div className="label">Holders</div>
+              <div className="label">Sahipler</div>
               <div className="value yellow">{compact(c.uniqueHolders)}</div>
             </div>
             <div className="metric">
-              <div className="label">24h Cap Δ</div>
+              <div className="label">24s Değişim</div>
               <div
                 className={`value ${Number(c.marketCapDelta24h ?? c.change24h) > 0 ? "green" : "red"}`}
               >
@@ -461,8 +422,8 @@ export default function Home() {
 
           {createdMs && (
             <div className="created">
-              Created:{" "}
-              {new Date(createdMs).toLocaleDateString("en-US", {
+              Oluşturulma:{" "}
+              {new Date(createdMs).toLocaleDateString("tr-TR", {
                 day: "2-digit",
                 month: "short",
                 year: "numeric",
@@ -473,17 +434,17 @@ export default function Home() {
                 return ms ? (() => {
                   const d = Date.now() - ms;
                   const s = Math.floor(d / 1000);
-                  if (s < 60) return `${s}s ago`;
+                  if (s < 60) return `${s}s önce`;
                   const m = Math.floor(s / 60);
-                  if (m < 60) return `${m}m ago`;
+                  if (m < 60) return `${m}d önce`;
                   const h = Math.floor(m / 60);
-                  if (h < 24) return `${h}h ago`;
+                  if (h < 24) return `${h}s önce`;
                   const days = Math.floor(h / 24);
-                  if (days < 30) return `${days}d ago`;
+                  if (days < 30) return `${days}g önce`;
                   const mon = Math.floor(days / 30);
-                  if (mon < 12) return `${mon}mo ago`;
+                  if (mon < 12) return `${mon}a önce`;
                   const yrs = Math.floor(mon / 12);
-                  return `${yrs}y ago`;
+                  return `${yrs}y önce`;
                 })() : "—";
               })()}
             </div>
@@ -491,18 +452,17 @@ export default function Home() {
         </section>
       )}
 
-      {/* Swaps Top 10 */}
       {swapsTop10.length > 0 && (
         <section className="panel">
-          <div className="panel-head">Recent Swaps — Top 10</div>
+          <div className="panel-head">Son İşlemler — İlk 10</div>
           <div className="table">
             <div className="row head">
               <div className="cell idx">#</div>
-              <div className="cell side">SIDE</div>
-              <div className="cell amt">AMOUNT</div>
+              <div className="cell side">TÜR</div>
+              <div className="cell amt">MİKTAR</div>
               <div className="cell usd">~USD</div>
-              <div className="cell date">DATE</div>
-              <div className="cell time">TIME</div>
+              <div className="cell date">TARİH</div>
+              <div className="cell time">SAAT</div>
             </div>
             {swapsTop10.map((s, i) => {
               const parts = tsToDateParts(s.ts);
@@ -512,7 +472,7 @@ export default function Home() {
                 <div className="row" key={`swap-${i}`}>
                   <div className="cell idx">{i + 1}.</div>
                   <div className={`cell side tag ${sideClass}`}>
-                    {side === "BUY" ? "▲ BUY" : "▼ SELL"}
+                    {side === "BUY" ? "▲ ALIM" : "▼ SATIM"}
                   </div>
                   <div className="cell amt">{compact(s.amount)}</div>
                   <div className="cell usd">{formatUSD(s.usd)}</div>
@@ -525,10 +485,9 @@ export default function Home() {
         </section>
       )}
 
-      {/* Holders Top 10 – CSS Bar Chart */}
       {holdersTop10.length > 0 && (
         <section className="panel">
-          <div className="panel-head">Top Holders — Share within Top 10</div>
+          <div className="panel-head">En Büyük Sahipler — İlk 10 İçindeki Pay</div>
           <div className="bars">
             {holdersTop10.map((h, i) => {
               const label = shortAddr(h.ens ?? h.owner);
@@ -546,14 +505,13 @@ export default function Home() {
           </div>
           <div className="panel-foot">
             {holdersTotal > 0
-              ? "Percentages are relative to the total of Top 10 balances."
-              : "Balances unavailable — percentages may be zero."}
+              ? "Yüzdeler, ilk 10 sahibinin toplam bakiyesine göredir."
+              : "Bakiyeler alınamadı, yüzdeler sıfır olabilir."}
           </div>
         </section>
       )}
 
-      {/* Terminal Log */}
-      <section className="terminal" aria-label="Live log">
+      <section className="terminal" aria-label="Canlı log">
         <div className="term-head">Terminal</div>
         <div className="term-body" ref={termRef}>
           {log.map((l, i) => (
@@ -562,30 +520,21 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Toast */}
       {toast && <div className="toast">{toast}</div>}
 
-      <footer className="foot">Casino vibes only — have fun.</footer>
+      <footer className="foot">Sadece eğlence için — iyi şanslar.</footer>
 
-      {/* --- styles: styled-jsx global (reset/theme) --- */}
       <style jsx global>{`
         :root {
-          --bg1: #050b12;
-          --bg2: #0b1f2e;
-          --text: #e6f0ff;
-          --dim: #9fb2c5;
-          --panel: rgba(255,255,255,0.06);
-          --panel-brd: rgba(255,255,255,0.12);
-          --glow: rgba(34,211,238,0.28);
-          --buy: #34d399;
-          --sell: #f87171;
+          --bg1: #050b12; --bg2: #0b1f2e; --text: #e6f0ff; --dim: #9fb2c5;
+          --panel: rgba(255,255,255,0.06); --panel-brd: rgba(255,255,255,0.12);
+          --glow: rgba(34,211,238,0.28); --buy: #34d399; --sell: #f87171;
         }
         * { box-sizing: border-box; }
         html, body { height: 100%; }
         body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Inter, Roboto, Arial; color: var(--text); }
       `}</style>
 
-      {/* --- styles: page --- */}
       <style jsx>{`
         .screen {
           min-height: 100vh;
@@ -593,21 +542,13 @@ export default function Home() {
             radial-gradient(1200px 600px at 50% -10%, var(--bg2) 0%, var(--bg1) 45%, #000 100%),
             radial-gradient(600px 300px at 85% 10%, rgba(34,211,238,0.12), transparent 70%),
             radial-gradient(600px 300px at 15% 15%, rgba(168,85,247,0.12), transparent 70%);
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          padding: 32px 20px 40px;
+          display: flex; flex-direction: column; align-items: center; padding: 32px 20px 40px;
         }
-
         .header { text-align: center; margin-top: 8px; }
         .title {
-          font-size: 28px;
-          font-weight: 900;
-          letter-spacing: .4px;
+          font-size: 28px; font-weight: 900; letter-spacing: .4px;
           background: linear-gradient(90deg, #22d3ee, #a855f7);
-          -webkit-background-clip: text;
-          background-clip: text;
-          color: transparent;
+          -webkit-background-clip: text; background-clip: text; color: transparent;
           filter: drop-shadow(0 6px 30px rgba(34,211,238,0.25));
         }
         .emoji { margin-right: 6px; }
@@ -615,19 +556,15 @@ export default function Home() {
 
         .roulette { margin-top: 28px; }
         .wheel {
-          position: relative;
-          width: 260px; height: 260px;
-          perspective: 900px;
-          transform-style: preserve-3d;
-          transition: transform 0.3s ease;
+          position: relative; width: 260px; height: 260px;
+          perspective: 900px; transform-style: preserve-3d; transition: transform 0.3s ease;
           filter: drop-shadow(0 10px 40px rgba(34,211,238,0.18));
         }
         .wheel.spinning { animation: spin 1.15s cubic-bezier(0.22,1,0.36,1); }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(720deg); } }
 
         .ring {
-          position: absolute; inset: 0;
-          border-radius: 9999px;
+          position: absolute; inset: 0; border-radius: 9999px;
           background: conic-gradient(
             from 0deg,
             #10b981 0 18deg, #ef4444 18deg 36deg, #3b82f6 36deg 54deg, #f59e0b 54deg 72deg, #22d3ee 72deg 90deg,
@@ -639,37 +576,26 @@ export default function Home() {
         }
         .center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
         .center::before {
-          content: "";
-          width: 140px; height: 140px;
-          border-radius: 9999px;
-          background: rgba(0,0,0,0.6);
-          border: 1px solid var(--panel-brd);
+          content: ""; width: 140px; height: 140px; border-radius: 9999px;
+          background: rgba(0,0,0,0.6); border: 1px solid var(--panel-brd);
           box-shadow: 0 10px 40px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.03);
-          backdrop-filter: blur(6px);
-          position: absolute;
+          backdrop-filter: blur(6px); position: absolute;
         }
         .center-copy { position: relative; text-align: center; z-index: 2; }
         .mode { font-size: 12px; color: var(--dim); }
         .mode-value { margin-top: 4px; font-weight: 800; filter: drop-shadow(0 0 18px rgba(34,211,238,0.35)); }
         .spins { margin-top: 8px; font-size: 12px; color: var(--dim); }
-
         .pointer {
-          position: absolute; top: -10px; left: 50%;
-          transform: translateX(-50%);
-          width: 0; height: 0;
-          border-left: 10px solid transparent;
-          border-right: 10px solid transparent;
-          border-bottom: 14px solid #22d3ee;
+          position: absolute; top: -10px; left: 50%; transform: translateX(-50%);
+          width: 0; height: 0; border-left: 10px solid transparent;
+          border-right: 10px solid transparent; border-bottom: 14px solid #22d3ee;
           filter: drop-shadow(0 0 8px rgba(34,211,238,0.7));
         }
-
         .toolbar {
-          margin-top: 22px;
-          display: flex; align-items: center; justify-content: center;
+          margin-top: 22px; display: flex; align-items: center; justify-content: center;
           gap: 18px; flex-wrap: wrap;
         }
-        .actions { display: flex; gap: 10px; }
-        .toggles { display: flex; gap: 10px; align-items: center; }
+        .actions, .toggles { display: flex; gap: 10px; align-items: center; }
         .toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); }
 
         .btn {
@@ -677,27 +603,22 @@ export default function Home() {
           color: #001510; font-weight: 800;
           background: linear-gradient(180deg, #34d399, #10b981);
           box-shadow: 0 12px 30px rgba(16,185,129,0.35), 0 0 0 1px rgba(255,255,255,0.08) inset, 0 1px 0 rgba(255,255,255,0.18) inset;
-          cursor: pointer;
-          transition: transform .15s ease, box-shadow .15s ease, filter .15s ease, opacity .15s ease;
+          cursor: pointer; transition: transform .15s ease, box-shadow .15s ease, filter .15s ease, opacity .15s ease;
         }
         .btn:hover { transform: translateY(-1px); filter: saturate(1.1); }
         .btn:active { transform: translateY(1px) scale(0.99); }
         .btn.busy { opacity: .7; cursor: not-allowed; }
-
         .btn.secondary {
-          background: linear-gradient(180deg, #93c5fd, #60a5fa);
-          color: #001225;
+          background: linear-gradient(180deg, #93c5fd, #60a5fa); color: #001225;
           box-shadow: 0 12px 30px rgba(59,130,246,0.35), 0 0 0 1px rgba(255,255,255,0.08) inset, 0 1px 0 rgba(255,255,255,0.18) inset;
         }
         .btn.ghost { background: rgba(255,255,255,0.06); color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1); }
 
         .error {
-          margin-top: 16px; color: #fecaca;
-          background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
-          padding: 10px 12px; border-radius: 12px; font-size: 14px;
-          max-width: 680px; width: calc(100% - 32px); text-align: center;
+          margin-top: 16px; color: #fecaca; background: rgba(239,68,68,0.08);
+          border: 1px solid rgba(239,68,68,0.25); padding: 10px 12px; border-radius: 12px;
+          font-size: 14px; max-width: 680px; width: calc(100% - 32px); text-align: center;
         }
-
         .card {
           margin-top: 28px; width: 100%; max-width: 900px;
           border-radius: 16px; border: 1px solid var(--panel-brd);
@@ -717,20 +638,15 @@ export default function Home() {
         .metric { border-radius: 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 10px 12px; }
         .label { font-size: 12px; color: var(--dim); }
         .value { margin-top: 6px; font-weight: 800; }
-        .value.cyan { color: #99f6ff; }
-        .value.pink { color: #ffc2f1; }
-        .value.yellow { color: #ffe39b; }
-        .value.green { color: #a7f3d0; }
-        .value.red { color: #fca5a5; }
+        .value.cyan { color: #99f6ff; } .value.pink { color: #ffc2f1; } .value.yellow { color: #ffe39b; }
+        .value.green { color: #a7f3d0; } .value.red { color: #fca5a5; }
 
         .created { margin-top: 10px; font-size: 12px; color: var(--dim); }
 
-        /* Panel (Swaps / Holders) */
         .panel { margin-top: 22px; width: 100%; max-width: 900px; border: 1px solid var(--panel-brd); border-radius: 12px; background: rgba(2,6,15,0.5); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden; }
         .panel-head { padding: 10px 12px; font-size: 13px; font-weight: 700; color: #cbe7ff; background: rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.06); }
         .panel-foot { padding: 10px 12px; font-size: 12px; color: var(--dim); border-top: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.03); }
 
-        /* Swaps Table */
         .table { width: 100%; }
         .row { display: grid; grid-template-columns: 44px 100px 1fr 1fr 120px 80px; gap: 8px; padding: 8px 12px; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.06); }
         .row:last-child { border-bottom: 0; }
@@ -746,7 +662,6 @@ export default function Home() {
         @media (max-width: 760px) { .row { grid-template-columns: 32px 84px 1fr 1fr 100px 70px; } }
         @media (max-width: 520px) { .row { grid-template-columns: 28px 84px 1fr 1fr; } .cell.date, .cell.time { display: none; } }
 
-        /* Holders Bars */
         .bars { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 10px; }
         .bar-row { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; }
         .bar-label { font-size: 12px; color: #cfe7ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -755,7 +670,6 @@ export default function Home() {
         .bar-cap { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 12px; color: #e6f0ff; text-shadow: 0 1px 0 rgba(0,0,0,0.35); }
         @media (max-width: 640px) { .bar-row { grid-template-columns: 1fr; } }
 
-        /* Terminal */
         .terminal { margin-top: 24px; width: 100%; max-width: 900px; border: 1px solid var(--panel-brd); border-radius: 12px; background: rgba(2,6,15,0.6); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden; }
         .term-head { padding: 10px 12px; font-size: 12px; color: var(--dim); background: rgba(255,255,255,0.04); border-bottom: 1px solid rgba(255,255,255,0.06); }
         .term-body { max-height: 240px; overflow: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.45; }
@@ -765,7 +679,7 @@ export default function Home() {
         .line.info { color: #9fb2c5; }
 
         .toast { position: fixed; bottom: 16px; right: 16px; background: rgba(0,0,0,0.75); color: #e6f0ff; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; font-size: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); animation: toast-in .18s ease; }
-        @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: translateY(0); opacity: 1); } }
+        @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
         .foot { margin-top: 18px; font-size: 12px; color: var(--dim); }
       `}</style>
