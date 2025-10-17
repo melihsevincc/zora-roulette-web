@@ -32,52 +32,6 @@ type Coin = {
   decimals?: number;
 };
 
-type SwapNode = {
-  activityType?: string;
-  side?: string;
-  coinAmount?: string | number;
-  amount?: number | string;
-  usd?: number | string;
-  usdValue?: number;
-  ts?: number | string;
-  timestamp?: number | string;
-  blockTimestamp?: number | string;
-};
-
-type CommentNode = {
-  user?: string;
-  userProfile?: { username?: string; handle?: string };
-  text?: string;
-  comment?: string;
-  ts?: number | string;
-  timestamp?: number | string;
-  createdAt?: number | string;
-};
-
-type HolderNode = {
-  owner?: string;
-  ownerAddress?: string;
-  balance?: string | number;
-  formattedBalance?: string;
-  ens?: string;
-  ownerEns?: string;
-  ownerProfile?: { handle?: string; username?: string };
-};
-
-type DetailsBlock = {
-  comments?: Array<{ node?: CommentNode }>;
-  swaps?: Array<{ node?: SwapNode }>;
-  holders?: Array<{ node?: HolderNode }>;
-};
-
-type SpinResp = {
-  ok: boolean;
-  coin?: Coin | null;
-  details?: DetailsBlock | null;
-  error?: string;
-};
-
-// GraphQL result types
 type ExploreNode = {
   id?: string;
   name?: string;
@@ -91,7 +45,7 @@ type ExploreNode = {
 type ExploreEdge = { node?: ExploreNode };
 type ExploreResult = { exploreList?: { edges?: ExploreEdge[] } };
 
-type HolderNodeRaw = { owner?: string; ownerEns?: string; balance?: string };
+type HolderNode = { owner?: string; ownerEns?: string; balance?: string };
 type CommentNodeRaw = { comment?: string; timestamp?: number; userProfile?: { username?: string } };
 type SwapNodeRaw = { side?: string; amount?: number | string; usd?: number | string; timestamp?: number };
 
@@ -108,7 +62,7 @@ type CoinRaw = {
   createdAt?: string | number;
   change24h?: number;
   marketCapDelta24h?: number;
-  holders?: { edges?: Array<{ node?: HolderNodeRaw }> };
+  holders?: { edges?: Array<{ node?: HolderNode }> };
   comments?: { edges?: Array<{ node?: CommentNodeRaw }> };
   swaps?: { edges?: Array<{ node?: SwapNodeRaw }> };
 };
@@ -119,6 +73,19 @@ type GqlEnvelope<T> = { data?: T };
 
 // Edge type helper
 type EdgeNode<T> = { node?: T };
+
+type DetailsBlock = {
+  comments?: Array<{ node?: CommentNodeRaw }>;
+  swaps?: Array<{ node?: SwapNodeRaw }>;
+  holders?: Array<{ node?: HolderNode }>;
+};
+
+type SpinResp = {
+  ok: boolean;
+  coin?: Coin | null;
+  details?: DetailsBlock | null;
+  error?: string;
+};
 
 /** =========================
  *  Formatting helpers
@@ -223,7 +190,7 @@ async function exploreTopVolumeClient(first: number): Promise<ExploreEdge[]> {
 
 async function coinDetailsClient(address: string): Promise<{
   coin: CoinRaw | null;
-  holders: HolderNodeRaw[];
+  holders: HolderNode[];
   comments: CommentNodeRaw[];
   swaps: SwapNodeRaw[];
 }> {
@@ -243,9 +210,9 @@ async function coinDetailsClient(address: string): Promise<{
   const commentsEdges = t?.comments?.edges ?? [];
   const swapsEdges = t?.swaps?.edges ?? [];
 
-  const holders: HolderNodeRaw[] = holdersEdges
-    .map((e: EdgeNode<HolderNodeRaw>) => e?.node ?? {})
-    .filter((n: HolderNodeRaw | Record<string, unknown>): n is HolderNodeRaw => isRecord(n));
+  const holders: HolderNode[] = holdersEdges
+    .map((e: EdgeNode<HolderNode>) => e?.node ?? {})
+    .filter((n: HolderNode | Record<string, unknown>): n is HolderNode => isRecord(n));
 
   const comments: CommentNodeRaw[] = commentsEdges
     .map((e: EdgeNode<CommentNodeRaw>) => e?.node ?? {})
@@ -345,28 +312,9 @@ export default function Home() {
       };
 
       const details: DetailsBlock = {
-        comments: (d.comments || []).slice(0, 5).map<{ node?: CommentNode }>((c: CommentNodeRaw) => ({
-          node: {
-            user: c?.userProfile?.username ?? "anon",
-            text: String(c?.comment ?? ""),
-            ts: c?.timestamp ?? Date.now(),
-          },
-        })),
-        swaps: (d.swaps || []).slice(0, 10).map<{ node?: SwapNode }>((s: SwapNodeRaw) => ({
-          node: {
-            side: String(s?.side ?? "BUY").toUpperCase() === "SELL" ? "SELL" : "BUY",
-            amount: s?.amount ?? 0,
-            usd: s?.usd ?? undefined,
-            ts: s?.timestamp ?? Date.now(),
-          },
-        })),
-        holders: (d.holders || []).slice(0, 10).map<{ node?: HolderNode }>((r: HolderNodeRaw) => ({
-          node: {
-            owner: r?.ownerEns ?? r?.owner ?? "",
-            balance: r?.balance ?? "0",
-            ens: r?.ownerEns,
-          },
-        })),
+        comments: (d.comments || []).map(c => ({ node: c })),
+        swaps: (d.swaps || []).map(s => ({ node: s })),
+        holders: (d.holders || []).map(h => ({ node: h })),
       };
 
       setData({ ok: true, coin, details });
@@ -563,14 +511,14 @@ export default function Home() {
                   const s = edge.node;
                   if (!s) return null;
 
-                  const side = String(s.activityType || s.side || "BUY").toUpperCase();
+                  const side = String(s.side || "BUY").toUpperCase();
                   const isBuy = side === "BUY";
-                  const amount = s.coinAmount || s.amount || "0";
-                  const usd = s.usdValue || s.usd;
+                  const amount = s.amount || "0";
+                  const usd = s.usd;
 
                   // Parse timestamp
-                  const ts = s.blockTimestamp || s.timestamp || s.ts || Date.now();
-                  const date = new Date(typeof ts === "number" ? ts : parseInt(String(ts)) * 1000);
+                  const ts = s.timestamp || Date.now();
+                  const date = new Date(typeof ts === "number" ? ts * 1000 : ts);
                   const dateStr = isNaN(date.getTime()) ? "—" : date.toLocaleDateString("en-US", {
                     day: "2-digit",
                     month: "2-digit",
@@ -635,8 +583,8 @@ export default function Home() {
                   const balances = holders.map(edge => {
                     const h = edge.node;
                     if (!h) return 0;
-                    const bal = h.formattedBalance || h.balance || "0";
-                    return typeof bal === "number" ? bal : parseFloat(String(bal).replace(/,/g, "")) || 0;
+                    const bal = h.balance || "0";
+                    return parseFloat(String(bal).replace(/,/g, "")) || 0;
                   });
                   const total = balances.reduce((a, b) => a + b, 0);
 
@@ -644,7 +592,7 @@ export default function Home() {
                     const h = edge.node;
                     if (!h) return null;
 
-                    const addr = h.ownerProfile?.handle || h.ownerProfile?.username || h.ownerEns || h.ens || shortAddr(h.ownerAddress || h.owner || "");
+                    const addr = h.ownerEns || shortAddr(h.owner || "");
                     const bal = balances[i];
                     const pct = total > 0 ? (bal / total) * 100 : 0;
 
