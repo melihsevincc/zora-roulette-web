@@ -34,8 +34,6 @@ type HolderRow = {
   ens?: string;
 };
 
-// Bazı backend sürümleri holders'ı { top10: HolderRow[] } olarak, bazıları doğrudan HolderRow[] döndürdü.
-// İkisini de desteklemek için union kullanalım:
 type HoldersPayload = HolderRow[] | { top10: HolderRow[] } | null | undefined;
 
 type DetailsBlock = {
@@ -100,6 +98,35 @@ function holdersArray(h: HoldersPayload): HolderRow[] {
   if (!h) return [];
   return Array.isArray(h) ? h : (h.top10 ?? []);
 }
+function toNumber(v?: number | string): number | null {
+  if (v == null) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function formatUSD(v?: number | string): string {
+  const n = toNumber(v);
+  if (n == null) return "—";
+  if (Math.abs(n) >= 1) {
+    return "~$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  }
+  return "~$" + n.toFixed(2);
+}
+function tsToDateParts(ts?: number | string): { date: string; time: string } {
+  if (ts == null) return { date: "—", time: "—" };
+  const t =
+    typeof ts === "number"
+      ? ts
+      : (() => {
+        const parsed = Date.parse(String(ts));
+        return Number.isFinite(parsed) ? parsed : Date.now();
+      })();
+  const d = new Date(t);
+  return {
+    date: d.toLocaleDateString("en-US", { day: "2-digit", month: "2-digit", year: "numeric" }),
+    time: d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" }),
+  };
+}
 
 /* ---------- Component ---------- */
 export default function Home() {
@@ -119,7 +146,6 @@ export default function Home() {
   function pushLog(line: LogLine) {
     setLog((prev) => {
       const next = [...prev, line].slice(-400);
-      // Auto-scroll
       requestAnimationFrame(() => {
         if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
       });
@@ -152,14 +178,12 @@ export default function Home() {
           ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
           : null;
 
-      // Temel özet
       pushLog({
         t: `✔ ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}`,
         type: "ok",
       });
 
       if (verbose) {
-        // Adres ve zaman bilgisi
         if (c.address) {
           pushLog({ t: `↳ address: ${shortAddr(c.address)} • link: https://zora.co/coin/${c.address}`, type: "info" });
         }
@@ -170,33 +194,24 @@ export default function Home() {
           });
         }
 
-        // Details zenginlikleri (varsa)
         const d = j.details;
         if (d) {
-          // swaps özeti
           if (d.swaps && d.swaps.length) {
-            const buys = d.swaps.filter((s) => (s.side ?? "BUY") === "BUY").length;
-            const sells = d.swaps.length - buys;
-            pushLog({ t: `↳ swaps: ${d.swaps.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
+            const first10 = d.swaps.slice(0, 10);
+            const buys = first10.filter((s) => (s.side ?? "BUY") === "BUY").length;
+            const sells = first10.length - buys;
+            pushLog({ t: `↳ swaps(top10): ${first10.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
           }
-
-          // holders ilk 3 isim
           const h = holdersArray(d.holders);
           if (h.length) {
-            const hNames = h.slice(0, 3).map((x) => shortAddr(x.ens ?? x.owner));
-            pushLog({ t: `↳ top holders: ${hNames.join(", ")}${h.length > 3 ? " …" : ""}`, type: "info" });
+            const names = h.slice(0, 3).map((x) => shortAddr(x.ens ?? x.owner));
+            pushLog({ t: `↳ top holders: ${names.join(", ")}${h.length > 3 ? " …" : ""}`, type: "info" });
           }
-
-          // comments ilk 2 kullanıcı: alıntı kısaltılmış
           if (d.comments && d.comments.length) {
             const c1 = d.comments[0];
             const c2 = d.comments[1];
-            if (c1) {
-              pushLog({ t: `↳ comment #1 by @${c1.user ?? "anon"}: "${trunc(String(c1.text ?? ""))}"`, type: "info" });
-            }
-            if (c2) {
-              pushLog({ t: `↳ comment #2 by @${c2.user ?? "anon"}: "${trunc(String(c2.text ?? ""))}"`, type: "info" });
-            }
+            if (c1) pushLog({ t: `↳ comment #1 by @${c1.user ?? "anon"}: "${trunc(String(c1.text ?? ""))}"`, type: "info" });
+            if (c2) pushLog({ t: `↳ comment #2 by @${c2.user ?? "anon"}: "${trunc(String(c2.text ?? ""))}"`, type: "info" });
           }
         }
       }
@@ -234,6 +249,22 @@ export default function Home() {
     c?.createdAt != null
       ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
       : null;
+
+  // Swaps & holders data prepared for UI
+  const swapsTop10: SwapUI[] =
+    data?.details?.swaps ? data.details.swaps.slice(0, 10) : [];
+  const holdersTop10: HolderRow[] = holdersArray(data?.details?.holders).slice(0, 10);
+
+  // holders percentages (normalize to total of top10)
+  const holdersTotal = holdersTop10.reduce((acc, h) => {
+    const n = toNumber(h.balance);
+    return acc + (n ?? 0);
+  }, 0);
+  const holdersPercentages = holdersTop10.map((h) => {
+    const n = toNumber(h.balance) ?? 0;
+    const p = holdersTotal > 0 ? (n / holdersTotal) * 100 : 0;
+    return Math.max(0, Math.min(100, p));
+  });
 
   return (
     <main className="screen">
@@ -352,6 +383,67 @@ export default function Home() {
         </section>
       )}
 
+      {/* Swaps Top 10 */}
+      {swapsTop10.length > 0 && (
+        <section className="panel">
+          <div className="panel-head">Recent Swaps — Top 10</div>
+          <div className="table">
+            <div className="row head">
+              <div className="cell idx">#</div>
+              <div className="cell side">SIDE</div>
+              <div className="cell amt">AMOUNT</div>
+              <div className="cell usd">~USD</div>
+              <div className="cell date">DATE</div>
+              <div className="cell time">TIME</div>
+            </div>
+            {swapsTop10.map((s, i) => {
+              const parts = tsToDateParts(s.ts);
+              const side = (s.side ?? "BUY") === "BUY" ? "BUY" : "SELL";
+              const sideClass = side === "BUY" ? "buy" : "sell";
+              return (
+                <div className="row" key={`swap-${i}`}>
+                  <div className="cell idx">{i + 1}.</div>
+                  <div className={`cell side tag ${sideClass}`}>
+                    {side === "BUY" ? "▲ BUY" : "▼ SELL"}
+                  </div>
+                  <div className="cell amt">{compact(s.amount)}</div>
+                  <div className="cell usd">{formatUSD(s.usd)}</div>
+                  <div className="cell date">{parts.date}</div>
+                  <div className="cell time">{parts.time}</div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Holders Top 10 – CSS Bar Chart */}
+      {holdersTop10.length > 0 && (
+        <section className="panel">
+          <div className="panel-head">Top Holders — Share within Top 10</div>
+          <div className="bars">
+            {holdersTop10.map((h, i) => {
+              const label = shortAddr(h.ens ?? h.owner);
+              const p = holdersPercentages[i] ?? 0;
+              return (
+                <div className="bar-row" key={`h-${i}`}>
+                  <div className="bar-label">{i + 1}. {label}</div>
+                  <div className="bar-track" aria-label={`${label} ${p.toFixed(2)}%`}>
+                    <div className="bar-fill" style={{ width: `${p}%` }} />
+                    <div className="bar-cap">{p.toFixed(2)}%</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="panel-foot">
+            {holdersTotal > 0
+              ? "Percentages are relative to the total of Top 10 balances."
+              : "Balances unavailable — percentages may be zero."}
+          </div>
+        </section>
+      )}
+
       {/* Terminal Log */}
       <section className="terminal" aria-label="Live log">
         <div className="term-head">Terminal</div>
@@ -377,6 +469,8 @@ export default function Home() {
           --panel: rgba(255,255,255,0.06);
           --panel-brd: rgba(255,255,255,0.12);
           --glow: rgba(34,211,238,0.28);
+          --buy: #34d399;
+          --sell: #f87171;
         }
         * { box-sizing: border-box; }
         html, body { height: 100%; }
@@ -581,6 +675,97 @@ export default function Home() {
 
         .created { margin-top: 10px; font-size: 12px; color: var(--dim); }
 
+        /* Panel (Swaps / Holders) */
+        .panel {
+          margin-top: 22px;
+          width: 100%;
+          max-width: 900px;
+          border: 1px solid var(--panel-brd);
+          border-radius: 12px;
+          background: rgba(2,6,15,0.5);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+          overflow: hidden;
+        }
+        .panel-head {
+          padding: 10px 12px;
+          font-size: 13px;
+          font-weight: 700;
+          color: #cbe7ff;
+          background: rgba(255,255,255,0.05);
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .panel-foot {
+          padding: 10px 12px;
+          font-size: 12px;
+          color: var(--dim);
+          border-top: 1px solid rgba(255,255,255,0.06);
+          background: rgba(255,255,255,0.03);
+        }
+
+        /* Swaps Table */
+        .table { width: 100%; }
+        .row {
+          display: grid;
+          grid-template-columns: 44px 100px 1fr 1fr 120px 80px;
+          gap: 8px;
+          padding: 8px 12px;
+          align-items: center;
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .row:last-child { border-bottom: 0; }
+        .row.head {
+          background: rgba(255,255,255,0.04);
+          font-size: 12px;
+          color: var(--dim);
+          font-weight: 700;
+        }
+        .cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cell.idx { color: var(--dim); }
+        .cell.side { font-weight: 800; letter-spacing: .3px; }
+        .tag {
+          display: inline-flex; align-items: center; justify-content: center;
+          padding: 6px 10px; border-radius: 10px;
+          width: 90px;
+          color: #001510;
+        }
+        .buy { background: var(--buy); }
+        .sell { background: var(--sell); color: #240000; }
+        .amt, .usd { font-weight: 700; }
+
+        @media (max-width: 760px) {
+          .row { grid-template-columns: 32px 84px 1fr 1fr 100px 70px; }
+        }
+        @media (max-width: 520px) {
+          .row { grid-template-columns: 28px 84px 1fr 1fr; }
+          .cell.date, .cell.time { display: none; }
+        }
+
+        /* Holders Bars */
+        .bars { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 10px; }
+        .bar-row { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; }
+        .bar-label { font-size: 12px; color: #cfe7ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .bar-track {
+          position: relative;
+          height: 20px;
+          border-radius: 9999px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.10);
+          overflow: hidden;
+        }
+        .bar-fill {
+          position: absolute; left: 0; top: 0; bottom: 0;
+          background: linear-gradient(90deg, #22d3ee, #a855f7);
+          box-shadow: 0 0 18px rgba(34,211,238,0.35) inset;
+        }
+        .bar-cap {
+          position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+          font-size: 12px; color: #e6f0ff; text-shadow: 0 1px 0 rgba(0,0,0,0.35);
+        }
+        @media (max-width: 640px) {
+          .bar-row { grid-template-columns: 1fr; }
+        }
+
+        /* Terminal */
         .terminal {
           margin-top: 24px;
           width: 100%;
