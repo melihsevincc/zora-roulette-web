@@ -11,12 +11,13 @@ export type CoinRaw = {
   marketCapDelta24h?: string | number;
   change24h?: string | number;
   createdAt?: number | string;
-  // diğer alanlar da olabilir; biz şu an ihtiyaç kadarını tanımlıyoruz
+  decimals?: number;
+  totalSupply?: string | number;
 };
 
 export type ExploreEdgeRaw = { node?: CoinRaw; cursor?: string };
 
-// Uygulama içinde kullanacağımız normalize edilmiş coin (number’lar number)
+// Uygulama içinde kullanacağımız normalize edilmiş coin (number'lar number)
 export type Coin = {
   address: string;
   name: string;
@@ -27,18 +28,29 @@ export type Coin = {
   marketCapDelta24h?: number;
   change24h?: number;
   createdAt?: number | string;
+  decimals?: number;
 };
 
+// SDK'dan gelen swap node yapısı
 export type SwapNode = {
-  activityType?: string;
+  activityType?: string; // "BUY" | "SELL"
   coinAmount?: string;
   usdValue?: number;
   blockTimestamp?: string | number;
+  from?: string;
+  to?: string;
 };
 
+// SDK'dan gelen comment node yapısı
 export type CommentNode = {
-  userProfile?: { handle?: string };
-  user?: { handle?: string };
+  userProfile?: {
+    handle?: string;
+    username?: string;
+  };
+  user?: {
+    handle?: string;
+    username?: string;
+  };
   userAddress?: string;
   comment?: string;
   text?: string;
@@ -46,19 +58,27 @@ export type CommentNode = {
   createdAt?: number | string;
 };
 
+// SDK'dan gelen holder node yapısı
 export type HolderNode = {
-  ownerProfile?: { handle?: string };
+  ownerProfile?: {
+    handle?: string;
+    username?: string;
+  };
   ownerAddress?: string;
   balance?: string;
   formattedBalance?: string;
+  owner?: string;
+  ownerEns?: string;
 };
 
+// Details response structure
 export type Details = {
   swaps: Array<{ node?: SwapNode }>;
   comments: Array<{ node?: CommentNode }>;
   holders: Array<{ node?: HolderNode }>;
 };
 
+// Spin API response
 export type SpinResp = {
   ok: boolean;
   coin?: Coin;
