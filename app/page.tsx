@@ -36,8 +36,16 @@ type HolderRow = {
 
 type HoldersPayload = HolderRow[] | null | undefined;
 
+// --- DEĞİŞİKLİK: API'den gelen swap objesi için bir tip eklendi ---
+type SwapFromAPI = {
+  type?: "BUY" | "SELL";
+  amount?: string | number;
+  amountUSD?: string | number;
+  timestamp?: string | number;
+};
+
 type DetailsBlock = {
-  swaps?: unknown[];
+  swaps?: SwapFromAPI[]; // 'unknown[]' yerine 'SwapFromAPI[]' kullanıldı.
   comments?: CommentUI[];
   holders?: HoldersPayload;
 };
@@ -51,6 +59,7 @@ type SpinResp = {
 
 type LogLevel = "ok" | "warn" | "info";
 type LogLine = { t: string; type: LogLevel };
+
 
 /* ---------- Helpers (Yardımcı Fonksiyonlar) ---------- */
 function compact(n?: number | string) {
@@ -80,7 +89,7 @@ function toEpochMsLoose(v: number | string): number | null {
     const trimmed = v.trim();
     if (!trimmed) return null;
     if (isNaN(Number(trimmed))) {
-      const p = Date.parse(trimmed); // ISO formatı için (örn: "2023-03-15T12:00:00Z")
+      const p = Date.parse(trimmed);
       return Number.isFinite(p) && p > 0 ? p : null;
     }
     const n = Number(trimmed.replaceAll(",", ""));
@@ -127,17 +136,17 @@ function formatUSD(v?: number | string): string {
   return "~$" + n.toFixed(2);
 }
 
-// DEĞİŞTİRİLDİ: Bu fonksiyon artık çok basit, çünkü zor işi backend yapıyor.
-type UnknownObject = { [key: string]: any };
-function coerceSwap(s: UnknownObject): SwapUI {
+// --- DEĞİŞİKLİK: Fonksiyon parametresi artık 'any' yerine 'SwapFromAPI' tipi kullanıyor ---
+function coerceSwap(s: SwapFromAPI): SwapUI {
   const sideRaw = s.type?.toUpperCase();
   return {
     side: sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : undefined,
     amount: toNumber(s.amount) ?? undefined,
     usd: toNumber(s.amountUSD) ?? undefined,
-    ts: s.timestamp,
+    ts: s.timestamp as number | undefined,
   };
 }
+// -----------------------------------------------------------------------------
 
 /* ---------- Component (Ana Arayüz Bileşeni) ---------- */
 export default function Home() {
@@ -164,7 +173,7 @@ export default function Home() {
     if (loading) return;
     try {
       setLoading(true);
-      setData(null); // Yeni spin öncesi eski veriyi temizle
+      setData(null);
       wheelRef.current?.classList.add("spinning");
       pushLog({ t: `[${nowHHMMSS()}] 🎰 Çevriliyor…`, type: "info" });
 
@@ -173,7 +182,7 @@ export default function Home() {
 
       if (verbose) {
         console.log("--- /api/spin'den Gelen Yanıt ---");
-        console.log(JSON.parse(JSON.stringify(j))); // Konsolda daha iyi incelemek için
+        console.log(JSON.parse(JSON.stringify(j)));
         console.log("------------------------------------");
       }
 
@@ -184,7 +193,7 @@ export default function Home() {
       }
 
       const normalizedSwaps: SwapUI[] = Array.isArray(j.details?.swaps)
-        ? j.details.swaps.map((x) => coerceSwap(x as UnknownObject))
+        ? j.details.swaps.map((x) => coerceSwap(x)) // 'any' cast'ine gerek kalmadı
         : [];
 
       setData({
@@ -438,6 +447,7 @@ export default function Home() {
         body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Inter, Roboto, Arial; color: var(--text); }
       `}</style>
       <style jsx>{`
+        /* ... CSS stilleri (değişiklik yok) ... */
         .screen {
           min-height: 100vh;
           background:

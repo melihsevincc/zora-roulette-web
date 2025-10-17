@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import {
   setApiKey,
   getCoinsTopVolume24h,
-  getCoin,
   getCoinSwaps,
   getCoinComments,
   getCoinHolders,
@@ -10,6 +9,7 @@ import {
 import { base } from "viem/chains";
 
 // Projenizde bu tiplerin bulunduğu varsayılıyor, örn: /lib/types.ts
+// --- DEĞİŞİKLİK: 'any' yerine daha spesifik tipler tanımlandı ---
 type Coin = {
   name: string;
   symbol?: string;
@@ -21,25 +21,49 @@ type Coin = {
   change24h?: number;
   createdAt?: string;
 };
-type CoinRaw = any;
-type ExploreEdgeRaw = any;
-type SwapNode = any;
-type CommentNode = any;
-type HolderNode = any;
-type Details = {
-  swaps: any[];
-  comments: any[];
-  holders: any[];
+
+type CoinRaw = {
+  address: string;
+  name: string;
+  symbol: string;
+  marketCap?: string | null;
+  volume24h?: string | null;
+  uniqueHolders?: string | null;
+  marketCapDelta24h?: number | null;
+  change24h?: number | null;
+  createdAt?: string | null;
 };
 
-// API anahtarınızı environment variables'dan alıyoruz.
-// .env.local dosyanızda ZORA_API_KEY="..." satırının olduğundan emin olun.
-setApiKey(process.env.ZORA_API_KEY || "");
+type ExploreEdgeRaw = {
+  node: CoinRaw;
+};
 
-// Vercel'in bu rotayı her istekte yeniden çalıştırmasını sağlar.
+type SwapNode = {
+  type: 'BUY' | 'SELL';
+  amount: string;
+  amountUSD: string;
+  timestamp: string;
+};
+
+type CommentNode = Record<string, unknown>; // Yorumlar kullanılmıyorsa genel bir tip yeterli
+
+type HolderNode = {
+  owner: string;
+  balance: string;
+  ens?: string | null;
+};
+
+type Details = {
+  swaps: SwapNode[];
+  comments: CommentNode[];
+  holders: HolderNode[];
+};
+// -----------------------------------------------------------
+
+setApiKey(process.env.ZORA_API_KEY || "");
 export const dynamic = "force-dynamic";
 
-// --- Yardımcı Fonksiyonlar ---
+// --- Yardımcı Fonksiyonlar (Değişiklik yok) ---
 function shuffle<T>(arr: T[]): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -72,7 +96,7 @@ function normalizeCoin(raw: CoinRaw): Coin {
     createdAt: raw.createdAt,
   };
 }
-// ----------------------------
+// ----------------------------------------------
 
 export async function GET() {
   try {
@@ -101,50 +125,44 @@ export async function GET() {
         getCoinComments({ address: candidateCoin.address, chain: base.id, count: 10 }),
       ]);
 
-      // DEĞİŞİKLİK: Veriyi burada temizliyor ve frontend için hazırlıyoruz.
-      // SDK'dan gelen `{ node: ... }` yapısını ayıklıyoruz.
-      const swaps =
+      const swaps: SwapNode[] =
         swapsResult.status === "fulfilled"
           ? ((swapsResult.value?.data?.zora20Token?.swapActivities?.edges ?? []) as Array<{ node?: SwapNode }>)
-            .map(edge => edge.node) // .map() ile sadece 'node' objesini al
-            .filter(Boolean) // Boş olanları filtrele
+            .map(edge => edge.node)
+            .filter((node): node is SwapNode => Boolean(node))
           : [];
 
-      const holders =
+      const holders: HolderNode[] =
         holdersResult.status === "fulfilled"
           ? ((holdersResult.value?.data?.zora20Token?.tokenBalances?.edges ?? []) as Array<{ node?: HolderNode }>)
             .map(edge => {
               if (!edge.node) return null;
-              // `balance` alanı BigInt olabilir, JSON ile uyumlu olması için String'e çeviriyoruz.
               return {
-                owner: edge.node.owner,
+                ...edge.node,
                 balance: String(edge.node.balance ?? '0'),
-                ens: edge.node.ens,
               };
             })
-            .filter(Boolean)
+            .filter((node): node is HolderNode => Boolean(node))
           : [];
 
-      // En az bir işlem veya sahip bilgisi varsa bu coini seçiyoruz.
       if (swaps.length > 0 && holders.length > 0) {
         chosenCoin = candidateCoin;
 
-        const comments =
+        const comments: CommentNode[] =
           commentsResult.status === "fulfilled"
             ? ((commentsResult.value?.data?.zora20Token?.zoraComments?.edges ?? []) as Array<{ node?: CommentNode }>)
               .map(edge => edge.node)
-              .filter(Boolean)
+              .filter((node): node is CommentNode => Boolean(node))
             : [];
 
         details = { swaps, comments, holders };
-        break; // Döngüden çık
+        break;
       }
     }
 
-    // Eğer döngüde uygun bir coin bulunamazsa (hepsinin bilgisi boşsa), ilk adayı seçiyoruz.
     if (!chosenCoin) {
       chosenCoin = normalizeCoin(candidatesRaw[0]);
-      details = { swaps: [], comments: [], holders: [] }; // Detayları boş olarak ata
+      details = { swaps: [], comments: [], holders: [] };
     }
 
     return NextResponse.json({ ok: true, coin: chosenCoin, details });
