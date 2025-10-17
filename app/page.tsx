@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 /* ---------- Types ---------- */
 type Coin = {
@@ -34,10 +34,14 @@ type HolderRow = {
   ens?: string;
 };
 
+// Bazı backend sürümleri holders'ı { top10: HolderRow[] } olarak, bazıları doğrudan HolderRow[] döndürdü.
+// İkisini de desteklemek için union kullanalım:
+type HoldersPayload = HolderRow[] | { top10: HolderRow[] } | null | undefined;
+
 type DetailsBlock = {
-  swaps: SwapUI[];
-  comments: CommentUI[];
-  holders: HolderRow[];
+  swaps?: SwapUI[];
+  comments?: CommentUI[];
+  holders?: HoldersPayload;
 };
 
 type SpinResp = {
@@ -81,6 +85,21 @@ function timeAgo(ts: number) {
   const yrs = Math.floor(mon / 12);
   return `${yrs}y ago`;
 }
+function shortAddr(a?: string) {
+  if (!a) return "";
+  if (a.includes(".")) return a;
+  return a.length > 10 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
+}
+function trunc(s: string, len = 80) {
+  return s.length > len ? s.slice(0, len - 1) + "…" : s;
+}
+function nowHHMMSS() {
+  return new Date().toLocaleTimeString("en-US", { hour12: false });
+}
+function holdersArray(h: HoldersPayload): HolderRow[] {
+  if (!h) return [];
+  return Array.isArray(h) ? h : (h.top10 ?? []);
+}
 
 /* ---------- Component ---------- */
 export default function Home() {
@@ -88,6 +107,7 @@ export default function Home() {
   const [data, setData] = useState<SpinResp | null>(null);
   const [spins, setSpins] = useState<number>(0);
 
+  const [verbose, setVerbose] = useState<boolean>(true);
   const [log, setLog] = useState<LogLine[]>([
     { t: "💫 Live terminal ready. Press SPIN.", type: "info" },
   ]);
@@ -98,7 +118,7 @@ export default function Home() {
 
   function pushLog(line: LogLine) {
     setLog((prev) => {
-      const next = [...prev, line].slice(-300);
+      const next = [...prev, line].slice(-400);
       // Auto-scroll
       requestAnimationFrame(() => {
         if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
@@ -112,13 +132,13 @@ export default function Home() {
     try {
       setLoading(true);
       wheelRef.current?.classList.add("spinning");
-      pushLog({ t: "🎰 Spinning…", type: "info" });
+      pushLog({ t: `[${nowHHMMSS()}] 🎰 Spinning…`, type: "info" });
 
       const r = await fetch("/api/spin", { cache: "no-store" });
       const j: SpinResp = await r.json();
 
       if (!j.ok) {
-        pushLog({ t: `⚠ spin failed: ${j.error ?? "unexpected-error"}`, type: "warn" });
+        pushLog({ t: `[${nowHHMMSS()}] ⚠ spin failed: ${j.error ?? "unexpected-error"}`, type: "warn" });
         setData(j);
         return;
       }
@@ -127,13 +147,62 @@ export default function Home() {
       setSpins((s) => s + 1);
 
       const c = j.coin!;
+      const createdDate =
+        c.createdAt != null
+          ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
+          : null;
+
+      // Temel özet
       pushLog({
-        t: `✔ ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)}`,
+        t: `✔ ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}`,
         type: "ok",
       });
+
+      if (verbose) {
+        // Adres ve zaman bilgisi
+        if (c.address) {
+          pushLog({ t: `↳ address: ${shortAddr(c.address)} • link: https://zora.co/coin/${c.address}`, type: "info" });
+        }
+        if (createdDate) {
+          pushLog({
+            t: `↳ created: ${createdDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })} • ${timeAgo(createdDate.getTime())}`,
+            type: "info",
+          });
+        }
+
+        // Details zenginlikleri (varsa)
+        const d = j.details;
+        if (d) {
+          // swaps özeti
+          if (d.swaps && d.swaps.length) {
+            const buys = d.swaps.filter((s) => (s.side ?? "BUY") === "BUY").length;
+            const sells = d.swaps.length - buys;
+            pushLog({ t: `↳ swaps: ${d.swaps.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
+          }
+
+          // holders ilk 3 isim
+          const h = holdersArray(d.holders);
+          if (h.length) {
+            const hNames = h.slice(0, 3).map((x) => shortAddr(x.ens ?? x.owner));
+            pushLog({ t: `↳ top holders: ${hNames.join(", ")}${h.length > 3 ? " …" : ""}`, type: "info" });
+          }
+
+          // comments ilk 2 kullanıcı: alıntı kısaltılmış
+          if (d.comments && d.comments.length) {
+            const c1 = d.comments[0];
+            const c2 = d.comments[1];
+            if (c1) {
+              pushLog({ t: `↳ comment #1 by @${c1.user ?? "anon"}: "${trunc(String(c1.text ?? ""))}"`, type: "info" });
+            }
+            if (c2) {
+              pushLog({ t: `↳ comment #2 by @${c2.user ?? "anon"}: "${trunc(String(c2.text ?? ""))}"`, type: "info" });
+            }
+          }
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      pushLog({ t: `⚠ spin failed: ${msg}`, type: "warn" });
+      pushLog({ t: `[${nowHHMMSS()}] ⚠ spin failed: ${msg}`, type: "warn" });
     } finally {
       setLoading(false);
       setTimeout(() => wheelRef.current?.classList.remove("spinning"), 350);
@@ -153,7 +222,6 @@ export default function Home() {
       setToast("Link copied!");
       pushLog({ t: `🔗 Copied: ${url}`, type: "info" });
     } catch {
-      // Fallback alert
       window.alert(url);
       setToast("Link ready!");
       pushLog({ t: `🔗 Link: ${url}`, type: "info" });
@@ -193,13 +261,32 @@ export default function Home() {
       </section>
 
       {/* Actions */}
-      <section className="actions">
-        <button onClick={spin} disabled={loading} className={`btn ${loading ? "busy" : ""}`}>
-          {loading ? "Spinning..." : "Spin"}
-        </button>
-        <button onClick={share} className="btn secondary" disabled={!c}>
-          Share
-        </button>
+      <section className="toolbar">
+        <div className="actions">
+          <button onClick={spin} disabled={loading} className={`btn ${loading ? "busy" : ""}`}>
+            {loading ? "Spinning..." : "Spin"}
+          </button>
+          <button onClick={share} className="btn secondary" disabled={!c}>
+            Share
+          </button>
+        </div>
+
+        <div className="toggles">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={verbose}
+              onChange={(e) => setVerbose(e.target.checked)}
+            />
+            <span>Verbose log</span>
+          </label>
+          <button
+            className="btn ghost"
+            onClick={() => setLog([{ t: "🧹 Log cleared.", type: "info" }])}
+          >
+            Clear log
+          </button>
+        </div>
       </section>
 
       {/* Error */}
@@ -381,7 +468,18 @@ export default function Home() {
           filter: drop-shadow(0 0 8px rgba(34,211,238,0.7));
         }
 
-        .actions { margin-top: 22px; display: flex; gap: 10px; }
+        .toolbar {
+          margin-top: 22px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 18px;
+          flex-wrap: wrap;
+        }
+        .actions { display: flex; gap: 10px; }
+        .toggles { display: flex; gap: 10px; align-items: center; }
+        .toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); }
+
         .btn {
           appearance: none;
           border: 0;
@@ -408,6 +506,11 @@ export default function Home() {
             0 12px 30px rgba(59,130,246,0.35),
             0 0 0 1px rgba(255,255,255,0.08) inset,
             0 1px 0 rgba(255,255,255,0.18) inset;
+        }
+        .btn.ghost {
+          background: rgba(255,255,255,0.06);
+          color: var(--text);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
         }
 
         .error {
@@ -496,7 +599,7 @@ export default function Home() {
           border-bottom: 1px solid rgba(255,255,255,0.06);
         }
         .term-body {
-          max-height: 220px;
+          max-height: 240px;
           overflow: auto;
           padding: 10px 12px;
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
