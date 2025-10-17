@@ -55,6 +55,31 @@ function normalizeCoin(raw: CoinRaw): Coin {
     createdAt: raw.createdAt,
   };
 }
+function extractSwapEdges(resp: any): any[] {
+  return (
+    resp?.data?.zora20Token?.swapActivities?.edges ||
+    resp?.data?.coin?.swapActivities?.edges ||
+    resp?.data?.swaps?.edges ||
+    []
+  );
+}
+function extractCommentEdges(resp: any): any[] {
+  return (
+    resp?.data?.zora20Token?.zoraComments?.edges ||
+    resp?.data?.zora20Token?.comments?.edges ||
+    resp?.data?.coin?.zoraComments?.edges ||
+    resp?.data?.coin?.comments?.edges ||
+    resp?.data?.comments?.edges ||
+    []
+  );
+}
+function extractHolderEdges(resp: any): any[] {
+  return (
+    resp?.data?.zora20Token?.tokenBalances?.edges ||
+    resp?.data?.coin?.tokenBalances?.edges ||
+    []
+  );
+}
 
 export async function GET() {
   try {
@@ -75,33 +100,15 @@ export async function GET() {
 
     for (const c of candidates) {
       const [sw, cm, ho] = await Promise.allSettled([
-        getCoinSwaps({ address: c.address, chain: base.id, first: 10 }),
-        getCoinComments({ address: c.address, chain: base.id, count: 10 }),
+        getCoinSwaps({ address: c.address, chain: base.id, first: 12 }),
+        getCoinComments({ address: c.address, chain: base.id, count: 20 }),
         getCoinHolders({ chainId: base.id, address: c.address, count: 10 }),
       ]);
 
-      // Swaps mapping - getCoinSwaps returns swapActivities
-      const swaps: Array<{ node?: SwapNode }> = [];
-      if (sw.status === "fulfilled" && sw.value?.data?.zora20Token?.swapActivities?.edges) {
-        const edges = sw.value.data.zora20Token.swapActivities.edges;
-        swaps.push(...edges.map((e: { node?: SwapNode }) => ({ node: e?.node })));
-      }
+      const swaps = sw.status === "fulfilled" ? extractSwapEdges(sw.value) : [];
+      const comments = cm.status === "fulfilled" ? extractCommentEdges(cm.value) : [];
+      const holders = ho.status === "fulfilled" ? extractHolderEdges(ho.value) : [];
 
-      // Comments mapping - getCoinComments returns zoraComments
-      const comments: Array<{ node?: CommentNode }> = [];
-      if (cm.status === "fulfilled" && cm.value?.data?.zora20Token?.zoraComments?.edges) {
-        const edges = cm.value.data.zora20Token.zoraComments.edges;
-        comments.push(...edges.map((e: { node?: CommentNode }) => ({ node: e?.node })));
-      }
-
-      // Holders mapping - getCoinHolders returns tokenBalances
-      const holders: Array<{ node?: HolderNode }> = [];
-      if (ho.status === "fulfilled" && ho.value?.data?.zora20Token?.tokenBalances?.edges) {
-        const edges = ho.value.data.zora20Token.tokenBalances.edges;
-        holders.push(...edges.map((e: { node?: HolderNode }) => ({ node: e?.node })));
-      }
-
-      // Check if we have any data
       if (comments.length > 0 || swaps.length > 0 || holders.length > 0) {
         chosen = c;
         details = { swaps, comments, holders };
@@ -114,33 +121,22 @@ export async function GET() {
       chosen = candidates[0];
       // Try to get details for first candidate anyway
       const [sw, cm, ho] = await Promise.allSettled([
-        getCoinSwaps({ address: chosen.address, chain: base.id, first: 10 }),
-        getCoinComments({ address: chosen.address, chain: base.id, count: 10 }),
+        getCoinSwaps({ address: chosen.address, chain: base.id, first: 12 }),
+        getCoinComments({ address: chosen.address, chain: base.id, count: 20 }),
         getCoinHolders({ chainId: base.id, address: chosen.address, count: 10 }),
       ]);
 
-      const swaps: Array<{ node?: SwapNode }> = [];
-      if (sw.status === "fulfilled" && sw.value?.data?.zora20Token?.swapActivities?.edges) {
-        swaps.push(...sw.value.data.zora20Token.swapActivities.edges.map((e: { node?: SwapNode }) => ({ node: e?.node })));
-      }
-
-      const comments: Array<{ node?: CommentNode }> = [];
-      if (cm.status === "fulfilled" && cm.value?.data?.zora20Token?.zoraComments?.edges) {
-        comments.push(...cm.value.data.zora20Token.zoraComments.edges.map((e: { node?: CommentNode }) => ({ node: e?.node })));
-      }
-
-      const holders: Array<{ node?: HolderNode }> = [];
-      if (ho.status === "fulfilled" && ho.value?.data?.zora20Token?.tokenBalances?.edges) {
-        holders.push(...ho.value.data.zora20Token.tokenBalances.edges.map((e: { node?: HolderNode }) => ({ node: e?.node })));
-      }
+      const swaps = sw.status === "fulfilled" ? extractSwapEdges(sw.value) : [];
+      const comments = cm.status === "fulfilled" ? extractCommentEdges(cm.value) : [];
+      const holders = ho.status === "fulfilled" ? extractHolderEdges(ho.value) : [];
 
       details = { swaps, comments, holders };
     }
 
     // Get full coin metadata
     const meta = await getCoin({ address: chosen.address, chain: base.id });
-    const coinRaw = (meta?.data?.zora20Token as CoinRaw) ?? null;
-    const coin: Coin = coinRaw ? normalizeCoin(coinRaw) : chosen;
+    const coinRaw = meta?.data?.zora20Token ?? meta?.data?.coin ?? meta?.coin ?? null;
+    const coin: Coin = coinRaw ? normalizeCoin(coinRaw as CoinRaw) : chosen;
 
     return NextResponse.json({ ok: true, coin, details });
   } catch (error) {
