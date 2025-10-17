@@ -2,68 +2,26 @@ import { NextResponse } from "next/server";
 import {
   setApiKey,
   getCoinsTopVolume24h,
+  getCoin,
   getCoinSwaps,
   getCoinComments,
   getCoinHolders,
 } from "@zoralabs/coins-sdk";
 import { base } from "viem/chains";
-
-// Projenizde bu tiplerin bulunduğu varsayılıyor, örn: /lib/types.ts
-// --- DEĞİŞİKLİK: 'any' yerine daha spesifik tipler tanımlandı ---
-type Coin = {
-  name: string;
-  symbol?: string;
-  address: string;
-  marketCap?: number;
-  volume24h?: number;
-  uniqueHolders?: number;
-  marketCapDelta24h?: number;
-  change24h?: number;
-  createdAt?: string;
-};
-
-type CoinRaw = {
-  address: string;
-  name: string;
-  symbol: string;
-  marketCap?: string | null;
-  volume24h?: string | null;
-  uniqueHolders?: string | null;
-  marketCapDelta24h?: number | null;
-  change24h?: number | null;
-  createdAt?: string | null;
-};
-
-type ExploreEdgeRaw = {
-  node: CoinRaw;
-};
-
-type SwapNode = {
-  type: 'BUY' | 'SELL';
-  amount: string;
-  amountUSD: string;
-  timestamp: string;
-};
-
-type CommentNode = Record<string, unknown>; // Yorumlar kullanılmıyorsa genel bir tip yeterli
-
-type HolderNode = {
-  owner: string;
-  balance: string;
-  ens?: string | null;
-};
-
-type Details = {
-  swaps: SwapNode[];
-  comments: CommentNode[];
-  holders: HolderNode[];
-};
-// -----------------------------------------------------------
+import type {
+  Coin,
+  CoinRaw,
+  ExploreEdgeRaw,
+  Details,
+  SwapNode,
+  CommentNode,
+  HolderNode,
+} from "@/lib/types";
 
 setApiKey(process.env.ZORA_API_KEY || "");
 export const dynamic = "force-dynamic";
 
-// --- Yardımcı Fonksiyonlar (Değişiklik yok) ---
+// utils
 function shuffle<T>(arr: T[]): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -72,17 +30,18 @@ function shuffle<T>(arr: T[]): T[] {
   }
   return a;
 }
-
+function take<T>(arr: T[], n: number): T[] {
+  return arr.slice(0, Math.max(0, Math.min(n, arr.length)));
+}
 const toNum = (v: unknown): number | undefined => {
   if (v == null) return undefined;
   if (typeof v === "number") return v;
   if (typeof v === "string") {
-    const n = Number(v.replace(/,/g, ""));
+    const n = Number(v.replace(/_/g, ""));
     return Number.isFinite(n) ? n : undefined;
   }
   return undefined;
 };
-
 function normalizeCoin(raw: CoinRaw): Coin {
   return {
     address: raw.address,
@@ -96,85 +55,99 @@ function normalizeCoin(raw: CoinRaw): Coin {
     createdAt: raw.createdAt,
   };
 }
-// ----------------------------------------------
 
 export async function GET() {
   try {
     const res = await getCoinsTopVolume24h({ count: 100 });
     const rawEdges = (res?.data?.exploreList?.edges ?? []) as ExploreEdgeRaw[];
     if (!rawEdges.length) {
-      return NextResponse.json({ ok: false, error: "Zora'dan coin listesi alınamadı." }, { status: 500 });
+      return NextResponse.json({ ok: false, error: "no-coins" }, { status: 500 });
     }
 
-    const candidatesRaw = shuffle(rawEdges)
+    const candidatesRaw = take(shuffle(rawEdges), 20)
       .map((e) => e?.node)
       .filter((n): n is CoinRaw => Boolean(n && n.address));
 
-    if (candidatesRaw.length === 0) {
-      return NextResponse.json({ ok: false, error: "Uygun formatta coin adayı bulunamadı." }, { status: 500 });
-    }
+    const candidates: Coin[] = candidatesRaw.map(normalizeCoin);
 
-    let chosenCoin: Coin | null = null;
+    let chosen: Coin | null = null;
     let details: Details | null = null;
 
-    for (const rawCandidate of candidatesRaw) {
-      const candidateCoin = normalizeCoin(rawCandidate);
-      const [swapsResult, holdersResult, commentsResult] = await Promise.allSettled([
-        getCoinSwaps({ address: candidateCoin.address, chain: base.id, first: 10 }),
-        getCoinHolders({ chainId: base.id, address: candidateCoin.address, count: 10 }),
-        getCoinComments({ address: candidateCoin.address, chain: base.id, count: 10 }),
+    for (const c of candidates) {
+      const [sw, cm, ho] = await Promise.allSettled([
+        getCoinSwaps({ address: c.address, chain: base.id, first: 10 }),
+        getCoinComments({ address: c.address, chain: base.id, count: 10 }),
+        getCoinHolders({ chainId: base.id, address: c.address, count: 10 }),
       ]);
 
-      const swaps: SwapNode[] =
-        swapsResult.status === "fulfilled"
-          ? ((swapsResult.value?.data?.zora20Token?.swapActivities?.edges ?? []) as Array<{ node?: SwapNode }>)
-            .map(edge => edge.node)
-            .filter((node): node is SwapNode => Boolean(node))
-          : [];
+      // Swaps mapping - getCoinSwaps returns swapActivities
+      const swaps: Array<{ node?: SwapNode }> = [];
+      if (sw.status === "fulfilled" && sw.value?.data?.zora20Token?.swapActivities?.edges) {
+        const edges = sw.value.data.zora20Token.swapActivities.edges;
+        swaps.push(...edges.map((e: { node?: SwapNode }) => ({ node: e?.node })));
+      }
 
-      const holders: HolderNode[] =
-        holdersResult.status === "fulfilled"
-          ? ((holdersResult.value?.data?.zora20Token?.tokenBalances?.edges ?? []) as Array<{ node?: HolderNode }>)
-            .map(edge => {
-              if (!edge.node) return null;
-              return {
-                ...edge.node,
-                balance: String(edge.node.balance ?? '0'),
-              };
-            })
-            .filter((node): node is HolderNode => Boolean(node))
-          : [];
+      // Comments mapping - getCoinComments returns zoraComments
+      const comments: Array<{ node?: CommentNode }> = [];
+      if (cm.status === "fulfilled" && cm.value?.data?.zora20Token?.zoraComments?.edges) {
+        const edges = cm.value.data.zora20Token.zoraComments.edges;
+        comments.push(...edges.map((e: { node?: CommentNode }) => ({ node: e?.node })));
+      }
 
-      if (swaps.length > 0 && holders.length > 0) {
-        chosenCoin = candidateCoin;
+      // Holders mapping - getCoinHolders returns tokenBalances
+      const holders: Array<{ node?: HolderNode }> = [];
+      if (ho.status === "fulfilled" && ho.value?.data?.zora20Token?.tokenBalances?.edges) {
+        const edges = ho.value.data.zora20Token.tokenBalances.edges;
+        holders.push(...edges.map((e: { node?: HolderNode }) => ({ node: e?.node })));
+      }
 
-        const comments: CommentNode[] =
-          commentsResult.status === "fulfilled"
-            ? ((commentsResult.value?.data?.zora20Token?.zoraComments?.edges ?? []) as Array<{ node?: CommentNode }>)
-              .map(edge => edge.node)
-              .filter((node): node is CommentNode => Boolean(node))
-            : [];
-
+      // Check if we have any data
+      if (comments.length > 0 || swaps.length > 0 || holders.length > 0) {
+        chosen = c;
         details = { swaps, comments, holders };
         break;
       }
     }
 
-    if (!chosenCoin) {
-      chosenCoin = normalizeCoin(candidatesRaw[0]);
-      details = { swaps: [], comments: [], holders: [] };
+    // Fallback to first candidate if no details found
+    if (!chosen) {
+      chosen = candidates[0];
+      // Try to get details for first candidate anyway
+      const [sw, cm, ho] = await Promise.allSettled([
+        getCoinSwaps({ address: chosen.address, chain: base.id, first: 10 }),
+        getCoinComments({ address: chosen.address, chain: base.id, count: 10 }),
+        getCoinHolders({ chainId: base.id, address: chosen.address, count: 10 }),
+      ]);
+
+      const swaps: Array<{ node?: SwapNode }> = [];
+      if (sw.status === "fulfilled" && sw.value?.data?.zora20Token?.swapActivities?.edges) {
+        swaps.push(...sw.value.data.zora20Token.swapActivities.edges.map((e: { node?: SwapNode }) => ({ node: e?.node })));
+      }
+
+      const comments: Array<{ node?: CommentNode }> = [];
+      if (cm.status === "fulfilled" && cm.value?.data?.zora20Token?.zoraComments?.edges) {
+        comments.push(...cm.value.data.zora20Token.zoraComments.edges.map((e: { node?: CommentNode }) => ({ node: e?.node })));
+      }
+
+      const holders: Array<{ node?: HolderNode }> = [];
+      if (ho.status === "fulfilled" && ho.value?.data?.zora20Token?.tokenBalances?.edges) {
+        holders.push(...ho.value.data.zora20Token.tokenBalances.edges.map((e: { node?: HolderNode }) => ({ node: e?.node })));
+      }
+
+      details = { swaps, comments, holders };
     }
 
-    return NextResponse.json({ ok: true, coin: chosenCoin, details });
+    // Get full coin metadata
+    const meta = await getCoin({ address: chosen.address, chain: base.id });
+    const coinRaw = (meta?.data?.zora20Token as CoinRaw) ?? null;
+    const coin: Coin = coinRaw ? normalizeCoin(coinRaw) : chosen;
 
-  } catch (err) {
-    const error = err as Error;
-    console.error("Zora API Route Hatası:", error.message);
-    let errorMessage = "Bilinmeyen bir sunucu hatası oluştu.";
-    if (error.message.includes("API key")) {
-      errorMessage = "Zora API anahtarı geçersiz veya eksik. Lütfen .env.local dosyasını kontrol edin.";
-    }
-    return NextResponse.json({ ok: false, error: errorMessage }, { status: 500 });
+    return NextResponse.json({ ok: true, coin, details });
+  } catch (error) {
+    console.error("Spin API error:", error);
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "unknown error" },
+      { status: 500 }
+    );
   }
 }
-
