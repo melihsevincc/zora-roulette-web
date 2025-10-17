@@ -34,7 +34,7 @@ type HolderRow = {
   ens?: string;
 };
 
-type HoldersPayload = HolderRow[] | { top10: HolderRow[] } | null | undefined;
+type HoldersPayload = HolderRow[] | null | undefined;
 
 type DetailsBlock = {
   swaps?: unknown[];
@@ -68,34 +68,34 @@ function pct(v?: number) {
   const s = v > 0 ? "+" : "";
   return `${s}${v.toFixed(2)}%`;
 }
-function isSecondEpoch(t: number) {
-  return t > 0 && t < 1e12;
-}
 
 function toEpochMsLoose(v: number | string): number | null {
+  if (v === null || v === undefined) return null;
   if (typeof v === "number") {
-    const ms = isSecondEpoch(v) ? v * 1000 : v;
+    const isSeconds = String(v).length <= 10;
+    const ms = isSeconds ? v * 1000 : v;
     return ms > 0 && Number.isFinite(ms) ? ms : null;
   }
   if (typeof v === "string") {
     const trimmed = v.trim();
     if (!trimmed) return null;
-    const n = Number(trimmed.replaceAll(",", ""));
-    if (Number.isFinite(n)) {
-      const ms = isSecondEpoch(n) ? n * 1000 : n;
-      return ms > 0 ? ms : null;
+    if (isNaN(Number(trimmed))) {
+      const p = Date.parse(trimmed); // ISO formatı için (örn: "2023-03-15T12:00:00Z")
+      return Number.isFinite(p) && p > 0 ? p : null;
     }
-    const p = Date.parse(trimmed);
-    return Number.isFinite(p) && p > 0 ? p : null;
+    const n = Number(trimmed.replaceAll(",", ""));
+    const isSeconds = String(n).length <= 10;
+    const ms = isSeconds ? n * 1000 : n;
+    return ms > 0 ? ms : null;
   }
   return null;
 }
 
 function tsToDateParts(ts?: number | string): { date: string; time: string } {
-  if (ts == null) return { date: "—", time: "—" };
-  const ms = toEpochMsLoose(ts);
+  const ms = toEpochMsLoose(ts || "");
   if (ms == null) return { date: "—", time: "—" };
   const d = new Date(ms);
+  if (isNaN(d.getTime())) return { date: "—", time: "—" };
   return {
     date: d.toLocaleDateString("en-US", { day: "2-digit", month: "2-digit", year: "numeric" }),
     time: d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" }),
@@ -112,9 +112,9 @@ function nowHHMMSS() {
 }
 function holdersArray(h: HoldersPayload): HolderRow[] {
   if (!h) return [];
-  return Array.isArray(h) ? h : (h.top10 ?? []);
+  return Array.isArray(h) ? h : [];
 }
-function toNumber(v?: number | string): number | null {
+function toNumber(v?: unknown): number | null {
   if (v == null) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   const n = Number(String(v).replaceAll(",", ""));
@@ -127,65 +127,16 @@ function formatUSD(v?: number | string): string {
   return "~$" + n.toFixed(2);
 }
 
-/* ---------- Swap Normalizer (Veri Ayıklama Fonksiyonları) ---------- */
-type UnknownSwap = Record<string, unknown>;
-
-function pickStr(obj: UnknownSwap, keys: string[]): string | undefined {
-  for (const k of keys) {
-    const v = obj[k];
-    if (typeof v === "string" && v.trim()) return v;
-  }
-  return undefined;
-}
-function pickBool(obj: UnknownSwap, keys: string[]): boolean | undefined {
-  for (const k of keys) {
-    const v = obj[k];
-    if (typeof v === "boolean") return v;
-  }
-  return undefined;
-}
-function numFromUnknown(u: unknown): number | undefined {
-  if (typeof u === "number" && Number.isFinite(u)) return u;
-  if (typeof u === "string") {
-    const n = Number(u.replaceAll(",", ""));
-    return Number.isFinite(n) ? n : undefined;
-  }
-  if (u && typeof u === "object") {
-    const o = u as Record<string, unknown>;
-    const candidates = ["raw", "value", "amount", "display", "usd", "usdValue"];
-    for (const c of candidates) {
-      const v = o[c];
-      if (typeof v === "number" && Number.isFinite(v)) return v;
-      if (typeof v === "string") {
-        const n = Number(v.replaceAll(",", ""));
-        if (Number.isFinite(n)) return n;
-      }
-    }
-  }
-  return undefined;
-}
-function pickNum(obj: UnknownSwap, keys: string[]): number | undefined {
-  for (const k of keys) {
-    const found = numFromUnknown(obj[k]);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-}
-
-// GÜNCELLENDİ: Bu fonksiyon artık Zora API'sinden gelebilecek daha fazla anahtar ismini tanıyor.
-function coerceSwap(s: UnknownSwap): SwapUI {
-  const action = pickStr(s, ["side", "action", "type", "tradeType", "takerSide", "transactionType", "swapType"])?.toUpperCase();
-  const isBuy = pickBool(s, ["isBuy", "buy"]);
-  const side: "BUY" | "SELL" | undefined =
-    action === "BUY" || action === "SELL" ? (action as "BUY" | "SELL")
-      : isBuy === true ? "BUY"
-        : isBuy === false ? "SELL"
-          : undefined;
-
-  const amount = pickNum(s, ["amount", "qty", "quantity", "tokenAmount", "tokenQty", "baseAmount", "baseQty", "size", "amountIn", "amountOut", "baseTokenAmount", "quoteTokenAmount", "value"]) ?? undefined;
-  const usd = pickNum(s, ["usd", "usdValue", "valueUsd", "quoteUsd", "usd_amount", "quoteAmountUsd", "amountUsd", "amountInUsd", "amountOutUsd", "priceUsd", "amountUSD", "valueUSD"]) ?? undefined;
-  const tsRaw = pickNum(s, ["ts", "timestamp", "time", "createdAt", "blockTime", "blockTimestamp", "executedAt"]) ?? (pickStr(s, ["ts", "timestamp", "time", "createdAt", "blockTimestamp", "date", "datetime", "executedAt"]) as string | undefined);
-  return { side, amount, usd, ts: tsRaw };
+// DEĞİŞTİRİLDİ: Bu fonksiyon artık çok basit, çünkü zor işi backend yapıyor.
+type UnknownObject = { [key: string]: any };
+function coerceSwap(s: UnknownObject): SwapUI {
+  const sideRaw = s.type?.toUpperCase();
+  return {
+    side: sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : undefined,
+    amount: toNumber(s.amount) ?? undefined,
+    usd: toNumber(s.amountUSD) ?? undefined,
+    ts: s.timestamp,
+  };
 }
 
 /* ---------- Component (Ana Arayüz Bileşeni) ---------- */
@@ -193,13 +144,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SpinResp | null>(null);
   const [spins, setSpins] = useState<number>(0);
-
   const [verbose, setVerbose] = useState<boolean>(true);
-  const [log, setLog] = useState<LogLine[]>([
-    { t: "💫 Canlı terminal hazır. SPIN'e bas.", type: "info" },
-  ]);
+  const [log, setLog] = useState<LogLine[]>([{ t: "💫 Canlı terminal hazır. SPIN'e bas.", type: "info" }]);
   const [toast, setToast] = useState<string | null>(null);
-
   const wheelRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<HTMLDivElement | null>(null);
 
@@ -217,37 +164,28 @@ export default function Home() {
     if (loading) return;
     try {
       setLoading(true);
+      setData(null); // Yeni spin öncesi eski veriyi temizle
       wheelRef.current?.classList.add("spinning");
       pushLog({ t: `[${nowHHMMSS()}] 🎰 Çevriliyor…`, type: "info" });
 
-      const r = await fetch("/api/spin", { cache: "no-store" });
+      const r = await fetch("/api/spin");
       const j: SpinResp = await r.json();
 
-      if (!j.ok) {
-        pushLog({ t: `[${nowHHMMSS()}] ⚠ Çevirme başarısız: ${j.error ?? "beklenmedik-hata"}`, type: "warn" });
+      if (verbose) {
+        console.log("--- /api/spin'den Gelen Yanıt ---");
+        console.log(JSON.parse(JSON.stringify(j))); // Konsolda daha iyi incelemek için
+        console.log("------------------------------------");
+      }
+
+      if (!j.ok || !j.coin) {
+        pushLog({ t: `[${nowHHMMSS()}] ⚠ Çevirme başarısız: ${j.error ?? "Coin bilgisi alınamadı."}`, type: "warn" });
         setData(j);
         return;
       }
 
-      // GÜNCELLENDİ: Hata ayıklama için gelen tüm `details` objesini konsola yazdırıyoruz.
-      // Bu sayede hem 'swaps' hem de 'holders' verisinin yapısını görebiliriz.
-      if (j.details) {
-        console.log("--- API'den Gelen Detay Verisi ---");
-        console.log(j.details);
-        console.log("---------------------------------");
-      }
-
       const normalizedSwaps: SwapUI[] = Array.isArray(j.details?.swaps)
-        ? (j.details!.swaps as unknown[]).slice(0, 10).map((x) => coerceSwap(x as Record<string, unknown>))
+        ? j.details.swaps.map((x) => coerceSwap(x as UnknownObject))
         : [];
-
-      // Hata ayıklama için işlenmiş swap verisini de konsola yazdırıyoruz.
-      // "Önce" ve "Sonra" karşılaştırması yaparak sorunu bulabiliriz.
-      if (normalizedSwaps.length > 0) {
-        console.log("--- İşlenmiş (Normalized) Swap Verisi ---");
-        console.log(normalizedSwaps);
-        console.log("---------------------------------------");
-      }
 
       setData({
         ...j,
@@ -262,27 +200,14 @@ export default function Home() {
         type: "ok",
       });
 
-      if (verbose) {
-        if (c.address) {
-          pushLog({ t: `↳ adres: ${shortAddr(c.address)} • link: https://zora.co/coin/${c.address}`, type: "info" });
-        }
-        const createdMs =
-          c.createdAt != null
-            ? toEpochMsLoose(typeof c.createdAt === "number" ? c.createdAt : String(c.createdAt))
-            : null;
-        if (createdMs) {
-          const d = new Date(createdMs);
-          pushLog({
-            t: `↳ oluşturulma: ${d.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}`,
-            type: "info",
-          });
-        }
-        const buys = normalizedSwaps.filter((s) => (s.side ?? "BUY") === "BUY").length;
-        const sells = normalizedSwaps.length - buys;
+      if (verbose && normalizedSwaps.length > 0) {
+        const buys = normalizedSwaps.filter((s) => s.side === "BUY").length;
+        const sells = normalizedSwaps.filter((s) => s.side === "SELL").length;
         pushLog({ t: `↳ işlemler(ilk 10): ${normalizedSwaps.length} (↑ ALIM ${buys} / ↓ SATIM ${sells})`, type: "info" });
       }
+
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof Error ? e.message : "Bilinmeyen bir hata oluştu.";
       pushLog({ t: `[${nowHHMMSS()}] ⚠ Çevirme başarısız: ${msg}`, type: "warn" });
     } finally {
       setLoading(false);
@@ -302,33 +227,23 @@ export default function Home() {
       await navigator.clipboard.writeText(url);
       setToast("Link kopyalandı!");
       pushLog({ t: `🔗 Kopyalandı: ${url}`, type: "info" });
-    } catch {
-      window.alert(url);
-      setToast("Link hazır!");
-      pushLog({ t: `🔗 Link: ${url}`, type: "info" });
+    } catch (err) {
+      console.error("Kopyalama hatası:", err);
+      prompt("Linki kopyala:", url);
     }
     setTimeout(() => setToast(null), 1500);
   }
 
   const c = data?.coin ?? null;
-  const createdMs =
-    c?.createdAt != null
-      ? toEpochMsLoose(typeof c.createdAt === "number" ? c.createdAt : String(c.createdAt))
-      : null;
+  const createdMs = c?.createdAt ? toEpochMsLoose(String(c.createdAt)) : null;
+  const details = data?.details;
 
-  const swapsTop10: SwapUI[] = Array.isArray(data?.details?.swaps)
-    ? (data!.details!.swaps as SwapUI[])
-    : [];
-
-  const holdersTop10: HolderRow[] = holdersArray(data?.details?.holders).slice(0, 10);
-  const holdersTotal = holdersTop10.reduce((acc, h) => {
-    const n = toNumber(h.balance);
-    return acc + (n ?? 0);
-  }, 0);
+  const swapsTop10: SwapUI[] = (details?.swaps as SwapUI[]) ?? [];
+  const holdersTop10: HolderRow[] = holdersArray(details?.holders).slice(0, 10);
+  const holdersTotal = holdersTop10.reduce((acc, h) => acc + (toNumber(h.balance) ?? 0), 0);
   const holdersPercentages = holdersTop10.map((h) => {
     const n = toNumber(h.balance) ?? 0;
-    const p = holdersTotal > 0 ? (n / holdersTotal) * 100 : 0;
-    return Math.max(0, Math.min(100, p));
+    return holdersTotal > 0 ? Math.max(0, Math.min(100, (n / holdersTotal) * 100)) : 0;
   });
 
   return (
@@ -339,7 +254,6 @@ export default function Home() {
         </h1>
         <p className="subtitle">Zora GraphQL ile canlı coin seçici • yatırım tavsiyesi değildir</p>
       </header>
-
       <section className="roulette">
         <div ref={wheelRef} className="wheel">
           <div className="ring" />
@@ -353,7 +267,6 @@ export default function Home() {
           <div className="pointer" />
         </div>
       </section>
-
       <section className="toolbar">
         <div className="actions">
           <button onClick={spin} disabled={loading} className={`btn ${loading ? "busy" : ""}`}>
@@ -363,7 +276,6 @@ export default function Home() {
             Paylaş
           </button>
         </div>
-
         <div className="toggles">
           <label className="toggle">
             <input
@@ -381,11 +293,9 @@ export default function Home() {
           </button>
         </div>
       </section>
-
       {data && !data.ok && (
         <div className="error">Hata: {data.error}</div>
       )}
-
       {c && (
         <section className="card">
           <div className="card-row">
@@ -404,7 +314,6 @@ export default function Home() {
               Zora&apos;da Görüntüle →
             </a>
           </div>
-
           <div className="grid">
             <div className="metric">
               <div className="label">Piyasa Değeri</div>
@@ -427,7 +336,6 @@ export default function Home() {
               </div>
             </div>
           </div>
-
           {createdMs && (
             <div className="created">
               Oluşturulma:{" "}
@@ -438,28 +346,20 @@ export default function Home() {
               })}
               {" • "}
               {(() => {
-                const ms = createdMs;
-                return ms ? (() => {
-                  const d = Date.now() - ms;
-                  const s = Math.floor(d / 1000);
-                  if (s < 60) return `${s}s önce`;
-                  const m = Math.floor(s / 60);
-                  if (m < 60) return `${m}d önce`;
-                  const h = Math.floor(m / 60);
-                  if (h < 24) return `${h}s önce`;
-                  const days = Math.floor(h / 24);
-                  if (days < 30) return `${days}g önce`;
-                  const mon = Math.floor(days / 30);
-                  if (mon < 12) return `${mon}a önce`;
-                  const yrs = Math.floor(mon / 12);
-                  return `${yrs}y önce`;
-                })() : "—";
+                const diff = Date.now() - createdMs;
+                const s = Math.floor(diff / 1000);
+                if (s < 60) return `${s}sn önce`;
+                const m = Math.floor(s / 60);
+                if (m < 60) return `${m}dk önce`;
+                const h = Math.floor(m / 60);
+                if (h < 24) return `${h}sa önce`;
+                const d = Math.floor(h / 24);
+                return `${d}g önce`;
               })()}
             </div>
           )}
         </section>
       )}
-
       {swapsTop10.length > 0 && (
         <section className="panel">
           <div className="panel-head">Son İşlemler — İlk 10</div>
@@ -474,7 +374,7 @@ export default function Home() {
             </div>
             {swapsTop10.map((s, i) => {
               const parts = tsToDateParts(s.ts);
-              const side = (s.side ?? "BUY") === "BUY" ? "BUY" : "SELL";
+              const side = (s.side ?? "BUY");
               const sideClass = side === "BUY" ? "buy" : "sell";
               return (
                 <div className="row" key={`swap-${i}`}>
@@ -492,7 +392,6 @@ export default function Home() {
           </div>
         </section>
       )}
-
       {holdersTop10.length > 0 && (
         <section className="panel">
           <div className="panel-head">En Büyük Sahipler — İlk 10 İçindeki Pay</div>
@@ -518,7 +417,6 @@ export default function Home() {
           </div>
         </section>
       )}
-
       <section className="terminal" aria-label="Canlı log">
         <div className="term-head">Terminal</div>
         <div className="term-body" ref={termRef}>
@@ -527,11 +425,8 @@ export default function Home() {
           ))}
         </div>
       </section>
-
       {toast && <div className="toast">{toast}</div>}
-
       <footer className="foot">Sadece eğlence için — iyi şanslar.</footer>
-
       <style jsx global>{`
         :root {
           --bg1: #050b12; --bg2: #0b1f2e; --text: #e6f0ff; --dim: #9fb2c5;
@@ -542,7 +437,6 @@ export default function Home() {
         html, body { height: 100%; }
         body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Inter, Roboto, Arial; color: var(--text); }
       `}</style>
-
       <style jsx>{`
         .screen {
           min-height: 100vh;

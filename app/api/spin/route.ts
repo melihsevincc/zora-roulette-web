@@ -8,21 +8,38 @@ import {
   getCoinHolders,
 } from "@zoralabs/coins-sdk";
 import { base } from "viem/chains";
-import type {
-  Coin,
-  CoinRaw,
-  ExploreEdgeRaw,
-  Details,
-  SwapNode,
-  CommentNode,
-  HolderNode,
-} from "@/lib/types"; // Bu tipleri projenizde tanımladığınızı varsayıyorum.
+
+// Projenizde bu tiplerin bulunduğu varsayılıyor, örn: /lib/types.ts
+type Coin = {
+  name: string;
+  symbol?: string;
+  address: string;
+  marketCap?: number;
+  volume24h?: number;
+  uniqueHolders?: number;
+  marketCapDelta24h?: number;
+  change24h?: number;
+  createdAt?: string;
+};
+type CoinRaw = any;
+type ExploreEdgeRaw = any;
+type SwapNode = any;
+type CommentNode = any;
+type HolderNode = any;
+type Details = {
+  swaps: any[];
+  comments: any[];
+  holders: any[];
+};
 
 // API anahtarınızı environment variables'dan alıyoruz.
+// .env.local dosyanızda ZORA_API_KEY="..." satırının olduğundan emin olun.
 setApiKey(process.env.ZORA_API_KEY || "");
+
+// Vercel'in bu rotayı her istekte yeniden çalıştırmasını sağlar.
 export const dynamic = "force-dynamic";
 
-// --- Yardımcı Fonksiyonlar (Değişiklik yok) ---
+// --- Yardımcı Fonksiyonlar ---
 function shuffle<T>(arr: T[]): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -31,18 +48,17 @@ function shuffle<T>(arr: T[]): T[] {
   }
   return a;
 }
-function take<T>(arr: T[], n: number): T[] {
-  return arr.slice(0, Math.max(0, Math.min(n, arr.length)));
-}
+
 const toNum = (v: unknown): number | undefined => {
   if (v == null) return undefined;
   if (typeof v === "number") return v;
   if (typeof v === "string") {
-    const n = Number(v.replace(/,/g, "")); // Alt çizgi yerine virgül de olabilir
+    const n = Number(v.replace(/,/g, ""));
     return Number.isFinite(n) ? n : undefined;
   }
   return undefined;
 };
+
 function normalizeCoin(raw: CoinRaw): Coin {
   return {
     address: raw.address,
@@ -56,7 +72,7 @@ function normalizeCoin(raw: CoinRaw): Coin {
     createdAt: raw.createdAt,
   };
 }
-// ----------------------------------------------
+// ----------------------------
 
 export async function GET() {
   try {
@@ -66,7 +82,7 @@ export async function GET() {
       return NextResponse.json({ ok: false, error: "Zora'dan coin listesi alınamadı." }, { status: 500 });
     }
 
-    const candidatesRaw = take(shuffle(rawEdges), 20)
+    const candidatesRaw = shuffle(rawEdges)
       .map((e) => e?.node)
       .filter((n): n is CoinRaw => Boolean(n && n.address));
 
@@ -74,65 +90,73 @@ export async function GET() {
       return NextResponse.json({ ok: false, error: "Uygun formatta coin adayı bulunamadı." }, { status: 500 });
     }
 
-    const candidates: Coin[] = candidatesRaw.map(normalizeCoin);
-
-    let chosen: Coin | null = null;
+    let chosenCoin: Coin | null = null;
     let details: Details | null = null;
 
-    for (const c of candidates) {
-      const [sw, cm, ho] = await Promise.allSettled([
-        getCoinSwaps({ address: c.address, chain: base.id, first: 10 }),
-        getCoinComments({ address: c.address, chain: base.id, count: 10 }),
-        getCoinHolders({ chainId: base.id, address: c.address, count: 10 }),
+    for (const rawCandidate of candidatesRaw) {
+      const candidateCoin = normalizeCoin(rawCandidate);
+      const [swapsResult, holdersResult, commentsResult] = await Promise.allSettled([
+        getCoinSwaps({ address: candidateCoin.address, chain: base.id, first: 10 }),
+        getCoinHolders({ chainId: base.id, address: candidateCoin.address, count: 10 }),
+        getCoinComments({ address: candidateCoin.address, chain: base.id, count: 10 }),
       ]);
 
-      // --- DEĞİŞİKLİK BAŞLANGICI: Veriyi burada temizliyoruz ---
-      // Gelen verinin içindeki `node` objelerini ayıklıyoruz.
+      // DEĞİŞİKLİK: Veriyi burada temizliyor ve frontend için hazırlıyoruz.
+      // SDK'dan gelen `{ node: ... }` yapısını ayıklıyoruz.
       const swaps =
-        sw.status === "fulfilled"
-          ? ((sw.value?.data?.zora20Token?.swapActivities?.edges ?? []) as Array<{ node?: SwapNode }>)
-            .map(edge => edge.node) // .map() ile 'node' objesini dışarı çıkar
-            .filter(Boolean) as SwapNode[] // Boş olanları filtrele
-          : [];
-
-      const comments =
-        cm.status === "fulfilled"
-          ? ((cm.value?.data?.zora20Token?.zoraComments?.edges ?? []) as Array<{ node?: CommentNode }>)
-            .map(edge => edge.node)
-            .filter(Boolean) as CommentNode[]
+        swapsResult.status === "fulfilled"
+          ? ((swapsResult.value?.data?.zora20Token?.swapActivities?.edges ?? []) as Array<{ node?: SwapNode }>)
+            .map(edge => edge.node) // .map() ile sadece 'node' objesini al
+            .filter(Boolean) // Boş olanları filtrele
           : [];
 
       const holders =
-        ho.status === "fulfilled"
-          ? ((ho.value?.data?.zora20Token?.tokenBalances?.edges ?? []) as Array<{ node?: HolderNode }>)
-            .map(edge => edge.node)
-            .filter(Boolean) as HolderNode[]
+        holdersResult.status === "fulfilled"
+          ? ((holdersResult.value?.data?.zora20Token?.tokenBalances?.edges ?? []) as Array<{ node?: HolderNode }>)
+            .map(edge => {
+              if (!edge.node) return null;
+              // `balance` alanı BigInt olabilir, JSON ile uyumlu olması için String'e çeviriyoruz.
+              return {
+                owner: edge.node.owner,
+                balance: String(edge.node.balance ?? '0'),
+                ens: edge.node.ens,
+              };
+            })
+            .filter(Boolean)
           : [];
-      // --- DEĞİŞİKLİK SONU ---
 
-      if (swaps.length > 0 || holders.length > 0) { // Yorumları kontrol etmeye gerek yok
-        chosen = c;
+      // En az bir işlem veya sahip bilgisi varsa bu coini seçiyoruz.
+      if (swaps.length > 0 && holders.length > 0) {
+        chosenCoin = candidateCoin;
+
+        const comments =
+          commentsResult.status === "fulfilled"
+            ? ((commentsResult.value?.data?.zora20Token?.zoraComments?.edges ?? []) as Array<{ node?: CommentNode }>)
+              .map(edge => edge.node)
+              .filter(Boolean)
+            : [];
+
         details = { swaps, comments, holders };
-        break;
+        break; // Döngüden çık
       }
     }
 
-    if (!chosen) {
-      chosen = candidates[0]; // Hiçbirinde detay bulunamazsa ilkini seç
+    // Eğer döngüde uygun bir coin bulunamazsa (hepsinin bilgisi boşsa), ilk adayı seçiyoruz.
+    if (!chosenCoin) {
+      chosenCoin = normalizeCoin(candidatesRaw[0]);
       details = { swaps: [], comments: [], holders: [] }; // Detayları boş olarak ata
     }
 
-    // Coin'in en güncel verisini tekrar çekiyoruz
-    const meta = await getCoin({ address: chosen.address, chain: base.id });
-    const coinRaw = (meta?.data?.zora20Token as CoinRaw) ?? null;
-    const coin: Coin = coinRaw ? normalizeCoin(coinRaw) : chosen;
-
-    return NextResponse.json({ ok: true, coin, details });
+    return NextResponse.json({ ok: true, coin: chosenCoin, details });
 
   } catch (err) {
     const error = err as Error;
-    console.error("Zora API Route Hatası:", error);
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    console.error("Zora API Route Hatası:", error.message);
+    let errorMessage = "Bilinmeyen bir sunucu hatası oluştu.";
+    if (error.message.includes("API key")) {
+      errorMessage = "Zora API anahtarı geçersiz veya eksik. Lütfen .env.local dosyasını kontrol edin.";
+    }
+    return NextResponse.json({ ok: false, error: errorMessage }, { status: 500 });
   }
 }
 
