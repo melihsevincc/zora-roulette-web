@@ -172,8 +172,9 @@ function pickNum(obj: UnknownSwap, keys: string[]): number | undefined {
   return undefined;
 }
 
+// GÜNCELLENDİ: Bu fonksiyon artık Zora API'sinden gelebilecek daha fazla anahtar ismini tanıyor.
 function coerceSwap(s: UnknownSwap): SwapUI {
-  const action = pickStr(s, ["side", "action", "type", "tradeType", "takerSide"])?.toUpperCase();
+  const action = pickStr(s, ["side", "action", "type", "tradeType", "takerSide", "transactionType", "swapType"])?.toUpperCase();
   const isBuy = pickBool(s, ["isBuy", "buy"]);
   const side: "BUY" | "SELL" | undefined =
     action === "BUY" || action === "SELL" ? (action as "BUY" | "SELL")
@@ -181,9 +182,9 @@ function coerceSwap(s: UnknownSwap): SwapUI {
         : isBuy === false ? "SELL"
           : undefined;
 
-  const amount = pickNum(s, ["amount", "qty", "quantity", "tokenAmount", "tokenQty", "baseAmount", "baseQty", "size", "amountIn", "amountOut"]) ?? undefined;
-  const usd = pickNum(s, ["usd", "usdValue", "valueUsd", "quoteUsd", "usd_amount", "quoteAmountUsd", "amountUsd", "amountInUsd", "amountOutUsd", "priceUsd"]) ?? undefined;
-  const tsRaw = pickNum(s, ["ts", "timestamp", "time", "createdAt", "blockTime"]) ?? (pickStr(s, ["ts", "timestamp", "time", "createdAt", "blockTimestamp", "date", "datetime"]) as string | undefined);
+  const amount = pickNum(s, ["amount", "qty", "quantity", "tokenAmount", "tokenQty", "baseAmount", "baseQty", "size", "amountIn", "amountOut", "baseTokenAmount", "quoteTokenAmount", "value"]) ?? undefined;
+  const usd = pickNum(s, ["usd", "usdValue", "valueUsd", "quoteUsd", "usd_amount", "quoteAmountUsd", "amountUsd", "amountInUsd", "amountOutUsd", "priceUsd", "amountUSD", "valueUSD"]) ?? undefined;
+  const tsRaw = pickNum(s, ["ts", "timestamp", "time", "createdAt", "blockTime", "blockTimestamp", "executedAt"]) ?? (pickStr(s, ["ts", "timestamp", "time", "createdAt", "blockTimestamp", "date", "datetime", "executedAt"]) as string | undefined);
   return { side, amount, usd, ts: tsRaw };
 }
 
@@ -228,21 +229,28 @@ export default function Home() {
         return;
       }
 
-      // --- HATA AYIKLAMA İÇİN EKLENDİ ---
-      // API'den gelen ilk swap objesinin yapısını görmek için konsola yazdırıyoruz.
-      // Bu, `coerceSwap` fonksiyonundaki anahtar (key) listelerini doğru ayarlamanıza yardımcı olacak.
-      if (Array.isArray(j.details?.swaps) && j.details.swaps.length > 0) {
-        console.log("API'den gelen ilk swap verisi:", j.details.swaps[0]);
+      // GÜNCELLENDİ: Hata ayıklama için gelen tüm `details` objesini konsola yazdırıyoruz.
+      // Bu sayede hem 'swaps' hem de 'holders' verisinin yapısını görebiliriz.
+      if (j.details) {
+        console.log("--- API'den Gelen Detay Verisi ---");
+        console.log(j.details);
+        console.log("---------------------------------");
       }
-      // ------------------------------------
 
       const normalizedSwaps: SwapUI[] = Array.isArray(j.details?.swaps)
         ? (j.details!.swaps as unknown[]).slice(0, 10).map((x) => coerceSwap(x as Record<string, unknown>))
         : [];
 
+      // Hata ayıklama için işlenmiş swap verisini de konsola yazdırıyoruz.
+      // "Önce" ve "Sonra" karşılaştırması yaparak sorunu bulabiliriz.
+      if (normalizedSwaps.length > 0) {
+        console.log("--- İşlenmiş (Normalized) Swap Verisi ---");
+        console.log(normalizedSwaps);
+        console.log("---------------------------------------");
+      }
+
       setData({
         ...j,
-        // Potansiyel çökme hatasını önlemek için `j.details` null ise boş obje kullanılıyor.
         details: { ...(j.details ?? {}), swaps: normalizedSwaps },
       });
 
