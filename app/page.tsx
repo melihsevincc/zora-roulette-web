@@ -369,7 +369,7 @@ export default function Home() {
             className="btn ghost"
             onClick={() => setLog([{ t: "🧹 Log temizlendi.", type: "info" }])}
           >
-            Log'u Temizle
+            Log&apos;u Temizle
           </button>
         </div>
       </section>
@@ -393,7 +393,7 @@ export default function Home() {
               rel="noreferrer"
               className="link"
             >
-              Zora'da Görüntüle →
+              Zora&apos;da Görüntüle →
             </a>
           </div>
 
@@ -686,3 +686,4 @@ export default function Home() {
     </main>
   );
 }
+
