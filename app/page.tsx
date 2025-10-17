@@ -69,36 +69,46 @@ function pct(v?: number) {
   return `${s}${v.toFixed(2)}%`;
 }
 function isSecondEpoch(t: number) {
-  // 13 digits ~ ms, 10 digits ~ s
   return t > 0 && t < 1e12;
 }
-function toEpochMs(v: number | string) {
-  const n = typeof v === "number" ? v : Number(v);
-  if (!Number.isFinite(n)) return Date.now();
-  return isSecondEpoch(n) ? n * 1000 : n;
+
+/** gevşek epoch çevirici — geçersizse null döner (1970 yok) */
+function toEpochMsLoose(v: number | string): number | null {
+  if (typeof v === "number") {
+    const ms = isSecondEpoch(v) ? v * 1000 : v;
+    return ms > 0 && Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (!trimmed) return null;
+    // sayıysa
+    const n = Number(trimmed.replaceAll(",", ""));
+    if (Number.isFinite(n)) {
+      const ms = isSecondEpoch(n) ? n * 1000 : n;
+      return ms > 0 ? ms : null;
+    }
+    // ISO tarihse
+    const p = Date.parse(trimmed);
+    return Number.isFinite(p) && p > 0 ? p : null;
+  }
+  return null;
 }
-function timeAgo(ts: number) {
-  const d = Math.max(0, Date.now() - ts);
-  const s = Math.floor(d / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const days = Math.floor(h / 24);
-  if (days < 30) return `${days}d ago`;
-  const mon = Math.floor(days / 30);
-  if (mon < 12) return `${mon}mo ago`;
-  const yrs = Math.floor(mon / 12);
-  return `${yrs}y ago`;
+
+function tsToDateParts(ts?: number | string): { date: string; time: string } {
+  if (ts == null) return { date: "—", time: "—" };
+  const ms = toEpochMsLoose(ts);
+  if (ms == null) return { date: "—", time: "—" };
+  const d = new Date(ms);
+  return {
+    date: d.toLocaleDateString("en-US", { day: "2-digit", month: "2-digit", year: "numeric" }),
+    time: d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" }),
+  };
 }
+
 function shortAddr(a?: string) {
   if (!a) return "";
   if (a.includes(".")) return a;
   return a.length > 10 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
-}
-function trunc(s: string, len = 80) {
-  return s.length > len ? s.slice(0, len - 1) + "…" : s;
 }
 function nowHHMMSS() {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -119,14 +129,6 @@ function formatUSD(v?: number | string): string {
   if (Math.abs(n) >= 1) return "~$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
   return "~$" + n.toFixed(2);
 }
-function tsToDateParts(ts?: number | string): { date: string; time: string } {
-  if (ts == null) return { date: "—", time: "—" };
-  const d = new Date(toEpochMs(ts));
-  return {
-    date: d.toLocaleDateString("en-US", { day: "2-digit", month: "2-digit", year: "numeric" }),
-    time: d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" }),
-  };
-}
 
 /* ---------- Swap normalizer (no any) ---------- */
 type UnknownSwap = Record<string, unknown>;
@@ -145,22 +147,39 @@ function pickBool(obj: UnknownSwap, keys: string[]): boolean | undefined {
   }
   return undefined;
 }
+function numFromUnknown(u: unknown): number | undefined {
+  if (typeof u === "number" && Number.isFinite(u)) return u;
+  if (typeof u === "string") {
+    const n = Number(u.replaceAll(",", ""));
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (u && typeof u === "object") {
+    const o = u as Record<string, unknown>;
+    // display/raw/value/usd gibi sık gelen alanlar
+    const candidates = ["raw", "value", "amount", "display", "usd", "usdValue"];
+    for (const c of candidates) {
+      const v = o[c];
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string") {
+        const n = Number(v.replaceAll(",", ""));
+        if (Number.isFinite(n)) return n;
+      }
+    }
+  }
+  return undefined;
+}
 function pickNum(obj: UnknownSwap, keys: string[]): number | undefined {
   for (const k of keys) {
-    const raw = obj[k];
-    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-    if (typeof raw === "string") {
-      const n = Number(raw.replaceAll(",", ""));
-      if (Number.isFinite(n)) return n;
-    }
+    const found = numFromUnknown(obj[k]);
+    if (found !== undefined) return found;
   }
   return undefined;
 }
 
 function coerceSwap(s: UnknownSwap): SwapUI {
   // side
-  const action = pickStr(s, ["side", "action", "type"])?.toUpperCase();
-  const isBuy = pickBool(s, ["isBuy"]);
+  const action = pickStr(s, ["side", "action", "type", "tradeType", "takerSide"])?.toUpperCase();
+  const isBuy = pickBool(s, ["isBuy", "buy"]);
   const side: "BUY" | "SELL" | undefined =
     action === "BUY" || action === "SELL"
       ? (action as "BUY" | "SELL")
@@ -170,19 +189,42 @@ function coerceSwap(s: UnknownSwap): SwapUI {
           ? "SELL"
           : undefined;
 
-  // amount (token side)
+  // amount (token miktarı)
   const amount =
-    pickNum(s, ["amount", "qty", "quantity", "tokenAmount", "baseAmount", "size"]) ?? undefined;
+    pickNum(s, [
+      "amount",
+      "qty",
+      "quantity",
+      "tokenAmount",
+      "tokenQty",
+      "baseAmount",
+      "baseQty",
+      "size",
+      "amountIn",
+      "amountOut",
+    ]) ?? undefined;
 
-  // usd (quote)
+  // usd (para karşılığı)
   const usd =
-    pickNum(s, ["usd", "usdValue", "valueUsd", "quoteUsd", "usd_amount", "quoteAmountUsd"]) ??
-    undefined;
+    pickNum(s, [
+      "usd",
+      "usdValue",
+      "valueUsd",
+      "quoteUsd",
+      "usd_amount",
+      "quoteAmountUsd",
+      "amountUsd",
+      "amountInUsd",
+      "amountOutUsd",
+      "priceUsd",
+    ]) ?? undefined;
 
-  // timestamp
+  // timestamp (saniye/ms/ISO)
   const tsRaw =
     pickNum(s, ["ts", "timestamp", "time", "createdAt", "blockTime"]) ??
-    (pickStr(s, ["ts", "timestamp", "time", "createdAt"]) as string | undefined);
+    (pickStr(s, ["ts", "timestamp", "time", "createdAt", "blockTimestamp", "date", "datetime"]) as
+      | string
+      | undefined);
 
   return { side, amount, usd, ts: tsRaw };
 }
@@ -228,15 +270,19 @@ export default function Home() {
         return;
       }
 
-      setData(j);
+      // swaps'ı burada da normalle ve UI'ya yaz
+      const normalizedSwaps: SwapUI[] = Array.isArray(j.details?.swaps)
+        ? (j.details!.swaps as unknown[]).slice(0, 10).map((x) => coerceSwap(x as Record<string, unknown>))
+        : [];
+
+      setData({
+        ...j,
+        details: { ...j.details, swaps: normalizedSwaps },
+      });
+
       setSpins((s) => s + 1);
 
       const c = j.coin!;
-      const createdDate =
-        c.createdAt != null
-          ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
-          : null;
-
       pushLog({
         t: `✔ ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}`,
         type: "ok",
@@ -246,23 +292,20 @@ export default function Home() {
         if (c.address) {
           pushLog({ t: `↳ address: ${shortAddr(c.address)} • link: https://zora.co/coin/${c.address}`, type: "info" });
         }
-        if (createdDate) {
+        const createdMs =
+          c.createdAt != null
+            ? toEpochMsLoose(typeof c.createdAt === "number" ? c.createdAt : String(c.createdAt))
+            : null;
+        if (createdMs) {
+          const d = new Date(createdMs);
           pushLog({
-            t: `↳ created: ${createdDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })} • ${timeAgo(createdDate.getTime())}`,
+            t: `↳ created: ${d.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}`,
             type: "info",
           });
         }
-
-        const d = j.details;
-        if (d && d.swaps) {
-          const raw = Array.isArray(d.swaps) ? (d.swaps as unknown[]) : [];
-          const first10 = raw.slice(0, 10).map((x) => coerceSwap(x as UnknownSwap));
-          const buys = first10.filter((s) => (s.side ?? "BUY") === "BUY").length;
-          const sells = first10.length - buys;
-          pushLog({ t: `↳ swaps(top10): ${first10.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
-          // Ayrıntıları UI'da da kullanacağız
-          setData((prev) => (prev ? { ...prev, details: { ...prev.details, swaps: first10 } } : prev));
-        }
+        const buys = normalizedSwaps.filter((s) => (s.side ?? "BUY") === "BUY").length;
+        const sells = normalizedSwaps.length - buys;
+        pushLog({ t: `↳ swaps(top10): ${normalizedSwaps.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -294,19 +337,16 @@ export default function Home() {
   }
 
   const c = data?.coin ?? null;
-  const createdDate =
+  const createdMs =
     c?.createdAt != null
-      ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
+      ? toEpochMsLoose(typeof c.createdAt === "number" ? c.createdAt : String(c.createdAt))
       : null;
 
-  // Swaps & holders data prepared for UI
   const swapsTop10: SwapUI[] = Array.isArray(data?.details?.swaps)
-    ? (data!.details!.swaps as unknown[]).slice(0, 10).map((x) => coerceSwap(x as UnknownSwap))
+    ? (data!.details!.swaps as SwapUI[])
     : [];
 
   const holdersTop10: HolderRow[] = holdersArray(data?.details?.holders).slice(0, 10);
-
-  // holders percentages (normalize to total of top10)
   const holdersTotal = holdersTop10.reduce((acc, h) => {
     const n = toNumber(h.balance);
     return acc + (n ?? 0);
@@ -419,16 +459,33 @@ export default function Home() {
             </div>
           </div>
 
-          {createdDate && (
+          {createdMs && (
             <div className="created">
               Created:{" "}
-              {createdDate.toLocaleDateString("en-US", {
+              {new Date(createdMs).toLocaleDateString("en-US", {
                 day: "2-digit",
                 month: "short",
                 year: "numeric",
               })}
               {" • "}
-              {timeAgo(createdDate.getTime())}
+              {(() => {
+                const ms = createdMs;
+                return ms ? (() => {
+                  const d = Date.now() - ms;
+                  const s = Math.floor(d / 1000);
+                  if (s < 60) return `${s}s ago`;
+                  const m = Math.floor(s / 60);
+                  if (m < 60) return `${m}m ago`;
+                  const h = Math.floor(m / 60);
+                  if (h < 24) return `${h}h ago`;
+                  const days = Math.floor(h / 24);
+                  if (days < 30) return `${days}d ago`;
+                  const mon = Math.floor(days / 30);
+                  if (mon < 12) return `${mon}mo ago`;
+                  const yrs = Math.floor(mon / 12);
+                  return `${yrs}y ago`;
+                })() : "—";
+              })()}
             </div>
           )}
         </section>
@@ -448,7 +505,7 @@ export default function Home() {
               <div className="cell time">TIME</div>
             </div>
             {swapsTop10.map((s, i) => {
-              const parts = tsToDateParts(s.ts ?? "");
+              const parts = tsToDateParts(s.ts);
               const side = (s.side ?? "BUY") === "BUY" ? "BUY" : "SELL";
               const sideClass = side === "BUY" ? "buy" : "sell";
               return (
@@ -566,10 +623,7 @@ export default function Home() {
           filter: drop-shadow(0 10px 40px rgba(34,211,238,0.18));
         }
         .wheel.spinning { animation: spin 1.15s cubic-bezier(0.22,1,0.36,1); }
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(720deg); }
-        }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(720deg); } }
 
         .ring {
           position: absolute; inset: 0;
@@ -583,10 +637,7 @@ export default function Home() {
           );
           box-shadow: inset 0 0 30px rgba(0,0,0,0.35), 0 0 40px rgba(34,211,238,0.18);
         }
-        .center {
-          position: absolute; inset: 0;
-          display: flex; align-items: center; justify-content: center;
-        }
+        .center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
         .center::before {
           content: "";
           width: 140px; height: 140px;
@@ -603,8 +654,7 @@ export default function Home() {
         .spins { margin-top: 8px; font-size: 12px; color: var(--dim); }
 
         .pointer {
-          position: absolute;
-          top: -10px; left: 50%;
+          position: absolute; top: -10px; left: 50%;
           transform: translateX(-50%);
           width: 0; height: 0;
           border-left: 10px solid transparent;
@@ -615,28 +665,18 @@ export default function Home() {
 
         .toolbar {
           margin-top: 22px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 18px;
-          flex-wrap: wrap;
+          display: flex; align-items: center; justify-content: center;
+          gap: 18px; flex-wrap: wrap;
         }
         .actions { display: flex; gap: 10px; }
         .toggles { display: flex; gap: 10px; align-items: center; }
         .toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); }
 
         .btn {
-          appearance: none;
-          border: 0;
-          padding: 12px 18px;
-          border-radius: 14px;
-          color: #001510;
-          font-weight: 800;
+          appearance: none; border: 0; padding: 12px 18px; border-radius: 14px;
+          color: #001510; font-weight: 800;
           background: linear-gradient(180deg, #34d399, #10b981);
-          box-shadow:
-            0 12px 30px rgba(16,185,129,0.35),
-            0 0 0 1px rgba(255,255,255,0.08) inset,
-            0 1px 0 rgba(255,255,255,0.18) inset;
+          box-shadow: 0 12px 30px rgba(16,185,129,0.35), 0 0 0 1px rgba(255,255,255,0.08) inset, 0 1px 0 rgba(255,255,255,0.18) inset;
           cursor: pointer;
           transition: transform .15s ease, box-shadow .15s ease, filter .15s ease, opacity .15s ease;
         }
@@ -647,75 +687,34 @@ export default function Home() {
         .btn.secondary {
           background: linear-gradient(180deg, #93c5fd, #60a5fa);
           color: #001225;
-          box-shadow:
-            0 12px 30px rgba(59,130,246,0.35),
-            0 0 0 1px rgba(255,255,255,0.08) inset,
-            0 1px 0 rgba(255,255,255,0.18) inset;
+          box-shadow: 0 12px 30px rgba(59,130,246,0.35), 0 0 0 1px rgba(255,255,255,0.08) inset, 0 1px 0 rgba(255,255,255,0.18) inset;
         }
-        .btn.ghost {
-          background: rgba(255,255,255,0.06);
-          color: var(--text);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
-        }
+        .btn.ghost { background: rgba(255,255,255,0.06); color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1); }
 
         .error {
-          margin-top: 16px;
-          color: #fecaca;
-          background: rgba(239,68,68,0.08);
-          border: 1px solid rgba(239,68,68,0.25);
-          padding: 10px 12px;
-          border-radius: 12px;
-          font-size: 14px;
-          max-width: 680px;
-          width: calc(100% - 32px);
-          text-align: center;
+          margin-top: 16px; color: #fecaca;
+          background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
+          padding: 10px 12px; border-radius: 12px; font-size: 14px;
+          max-width: 680px; width: calc(100% - 32px); text-align: center;
         }
 
         .card {
-          margin-top: 28px;
-          width: 100%;
-          max-width: 900px;
-          border-radius: 16px;
-          border: 1px solid var(--panel-brd);
+          margin-top: 28px; width: 100%; max-width: 900px;
+          border-radius: 16px; border: 1px solid var(--panel-brd);
           background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
-          backdrop-filter: blur(8px);
-          padding: 16px;
-          position: relative;
+          backdrop-filter: blur(8px); padding: 16px; position: relative;
         }
-        .card::after {
-          content: "";
-          position: absolute; inset: -1px;
-          border-radius: 16px;
-          box-shadow: 0 0 34px var(--glow);
-          pointer-events: none;
-          opacity: .35;
-        }
-        .card-row {
-          display: flex; align-items: center; justify-content: space-between; gap: 12px;
-        }
+        .card::after { content: ""; position: absolute; inset: -1px; border-radius: 16px; box-shadow: 0 0 34px var(--glow); pointer-events: none; opacity: .35; }
+        .card-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
         .coin-name { font-size: 18px; font-weight: 800; letter-spacing: .2px; }
         .symbol { color: #a9c7ff; font-weight: 700; }
         .address { margin-top: 4px; font-size: 12px; color: var(--dim); word-break: break-all; }
         .link { font-size: 12px; color: #89e6ff; text-decoration: underline; }
 
-        .grid {
-          margin-top: 14px;
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0,1fr));
-          gap: 12px;
-        }
-        @media (max-width: 760px) {
-          .grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
-        }
-        @media (max-width: 420px) {
-          .grid { grid-template-columns: 1fr; }
-        }
-        .metric {
-          border-radius: 14px;
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
-          padding: 10px 12px;
-        }
+        .grid { margin-top: 14px; display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; }
+        @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+        @media (max-width: 420px) { .grid { grid-template-columns: 1fr; } }
+        .metric { border-radius: 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 10px 12px; }
         .label { font-size: 12px; color: var(--dim); }
         .value { margin-top: 6px; font-weight: 800; }
         .value.cyan { color: #99f6ff; }
@@ -727,143 +726,46 @@ export default function Home() {
         .created { margin-top: 10px; font-size: 12px; color: var(--dim); }
 
         /* Panel (Swaps / Holders) */
-        .panel {
-          margin-top: 22px;
-          width: 100%;
-          max-width: 900px;
-          border: 1px solid var(--panel-brd);
-          border-radius: 12px;
-          background: rgba(2,6,15,0.5);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
-          overflow: hidden;
-        }
-        .panel-head {
-          padding: 10px 12px;
-          font-size: 13px;
-          font-weight: 700;
-          color: #cbe7ff;
-          background: rgba(255,255,255,0.05);
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .panel-foot {
-          padding: 10px 12px;
-          font-size: 12px;
-          color: var(--dim);
-          border-top: 1px solid rgba(255,255,255,0.06);
-          background: rgba(255,255,255,0.03);
-        }
+        .panel { margin-top: 22px; width: 100%; max-width: 900px; border: 1px solid var(--panel-brd); border-radius: 12px; background: rgba(2,6,15,0.5); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden; }
+        .panel-head { padding: 10px 12px; font-size: 13px; font-weight: 700; color: #cbe7ff; background: rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .panel-foot { padding: 10px 12px; font-size: 12px; color: var(--dim); border-top: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.03); }
 
         /* Swaps Table */
         .table { width: 100%; }
-        .row {
-          display: grid;
-          grid-template-columns: 44px 100px 1fr 1fr 120px 80px;
-          gap: 8px;
-          padding: 8px 12px;
-          align-items: center;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
+        .row { display: grid; grid-template-columns: 44px 100px 1fr 1fr 120px 80px; gap: 8px; padding: 8px 12px; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.06); }
         .row:last-child { border-bottom: 0; }
-        .row.head {
-          background: rgba(255,255,255,0.04);
-          font-size: 12px;
-          color: var(--dim);
-          font-weight: 700;
-        }
+        .row.head { background: rgba(255,255,255,0.04); font-size: 12px; color: var(--dim); font-weight: 700; }
         .cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell.idx { color: var(--dim); }
         .cell.side { font-weight: 800; letter-spacing: .3px; }
-        .tag {
-          display: inline-flex; align-items: center; justify-content: center;
-          padding: 6px 10px; border-radius: 10px;
-          width: 90px;
-          color: #001510;
-        }
+        .tag { display: inline-flex; align-items: center; justify-content: center; padding: 6px 10px; border-radius: 10px; width: 90px; color: #001510; }
         .buy { background: var(--buy); }
         .sell { background: var(--sell); color: #240000; }
         .amt, .usd { font-weight: 700; }
 
-        @media (max-width: 760px) {
-          .row { grid-template-columns: 32px 84px 1fr 1fr 100px 70px; }
-        }
-        @media (max-width: 520px) {
-          .row { grid-template-columns: 28px 84px 1fr 1fr; }
-          .cell.date, .cell.time { display: none; }
-        }
+        @media (max-width: 760px) { .row { grid-template-columns: 32px 84px 1fr 1fr 100px 70px; } }
+        @media (max-width: 520px) { .row { grid-template-columns: 28px 84px 1fr 1fr; } .cell.date, .cell.time { display: none; } }
 
         /* Holders Bars */
         .bars { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 10px; }
         .bar-row { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; }
         .bar-label { font-size: 12px; color: #cfe7ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .bar-track {
-          position: relative;
-          height: 20px;
-          border-radius: 9999px;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.10);
-          overflow: hidden;
-        }
-        .bar-fill {
-          position: absolute; left: 0; top: 0; bottom: 0;
-          background: linear-gradient(90deg, #22d3ee, #a855f7);
-          box-shadow: 0 0 18px rgba(34,211,238,0.35) inset;
-        }
-        .bar-cap {
-          position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-          font-size: 12px; color: #e6f0ff; text-shadow: 0 1px 0 rgba(0,0,0,0.35);
-        }
-        @media (max-width: 640px) {
-          .bar-row { grid-template-columns: 1fr; }
-        }
+        .bar-track { position: relative; height: 20px; border-radius: 9999px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); overflow: hidden; }
+        .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #22d3ee, #a855f7); box-shadow: 0 0 18px rgba(34,211,238,0.35) inset; }
+        .bar-cap { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 12px; color: #e6f0ff; text-shadow: 0 1px 0 rgba(0,0,0,0.35); }
+        @media (max-width: 640px) { .bar-row { grid-template-columns: 1fr; } }
 
         /* Terminal */
-        .terminal {
-          margin-top: 24px;
-          width: 100%;
-          max-width: 900px;
-          border: 1px solid var(--panel-brd);
-          border-radius: 12px;
-          background: rgba(2,6,15,0.6);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
-          overflow: hidden;
-        }
-        .term-head {
-          padding: 10px 12px;
-          font-size: 12px;
-          color: var(--dim);
-          background: rgba(255,255,255,0.04);
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .term-body {
-          max-height: 240px;
-          overflow: auto;
-          padding: 10px 12px;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-          font-size: 12px;
-          line-height: 1.45;
-        }
+        .terminal { margin-top: 24px; width: 100%; max-width: 900px; border: 1px solid var(--panel-brd); border-radius: 12px; background: rgba(2,6,15,0.6); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden; }
+        .term-head { padding: 10px 12px; font-size: 12px; color: var(--dim); background: rgba(255,255,255,0.04); border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .term-body { max-height: 240px; overflow: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.45; }
         .line { padding: 2px 0; }
         .line.ok { color: #b1f0c9; }
         .line.warn { color: #fca5a5; }
         .line.info { color: #9fb2c5; }
 
-        .toast {
-          position: fixed;
-          bottom: 16px;
-          right: 16px;
-          background: rgba(0,0,0,0.75);
-          color: #e6f0ff;
-          padding: 10px 12px;
-          border: 1px solid rgba(255,255,255,0.2);
-          border-radius: 10px;
-          font-size: 12px;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-          animation: toast-in .18s ease;
-        }
-        @keyframes toast-in {
-          from { transform: translateY(6px); opacity: 0; }
-          to { transform: translateY(0); opacity: 1; }
-        }
+        .toast { position: fixed; bottom: 16px; right: 16px; background: rgba(0,0,0,0.75); color: #e6f0ff; padding: 10px 12px; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; font-size: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); animation: toast-in .18s ease; }
+        @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: translateY(0); opacity: 1); } }
 
         .foot { margin-top: 18px; font-size: 12px; color: var(--dim); }
       `}</style>
