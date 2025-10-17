@@ -1,117 +1,120 @@
 import { NextResponse } from "next/server";
-import {
-  setApiKey,
-  getCoinsTopVolume24h,
-  getCoin,
-  getCoinSwaps,
-  getCoinComments,
-  getCoinHolders,
-} from "@zoralabs/coins-sdk";
-import { base } from "viem/chains";
-import type {
-  Coin,
-  CoinRaw,
-  ExploreEdgeRaw,
-  Details,
-  SwapNode,
-  CommentNode,
-  HolderNode,
-} from "@/lib/types";
 
-setApiKey(process.env.ZORA_API_KEY || "");
-export const dynamic = "force-dynamic";
+// Zora'nın ana GraphQL API adresi
+const ZORA_API_URL = "https://api.zora.co/graphql";
 
-// utils
-function shuffle<T>(arr: T[]): T[] {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+// Zora API'sine göndereceğimiz GraphQL sorgusu.
+// Bu sorgu, hacme göre sıralanmış coin'lerden rastgele birini seçer,
+// ardından o coin'in temel bilgilerini, son 10 işlemini (mints) ve ilk 10 sahibini (tokenHolders) çeker.
+const GQL_QUERY = `
+query SpinQuery {
+  tokens(
+    networks: [{network: ZORA, chain: ZORA_MAINNET}],
+    sort: {sortKey: VOLUME, sortDirection: DESC},
+    pagination: {limit: 50} # Hacmi en yüksek ilk 50 coin'den birini seçeceğiz
+  ) {
+    nodes {
+      token {
+        collectionAddress
+        name
+        symbol
+        totalSupply
+        market {
+          marketCap {
+            usd
+          }
+          volume {
+            usd
+          }
+          change24h {
+            percent
+          }
+        }
+        ... on ERC20Token {
+          # Son 10 işlemi (mint) çekiyoruz. Bu bizim "swaps" verimiz olacak.
+          mints(pagination: {limit: 10}) {
+            nodes {
+              transactionInfo {
+                blockTimestamp
+              }
+              value {
+                usd
+              }
+              quantity
+            }
+          }
+          # İlk 10 sahibi çekiyoruz. Bu bizim "holders" verimiz olacak.
+          tokenHolders(pagination: {limit: 10}) {
+            nodes {
+              ownerAddress
+              balance
+            }
+          }
+        }
+      }
+    }
   }
-  return a;
 }
-function take<T>(arr: T[], n: number): T[] {
-  return arr.slice(0, Math.max(0, Math.min(n, arr.length)));
-}
-const toNum = (v: unknown): number | undefined => {
-  if (v == null) return undefined;
-  if (typeof v === "number") return v;
-  if (typeof v === "string") {
-    const n = Number(v.replace(/_/g, ""));
-    return Number.isFinite(n) ? n : undefined;
-  }
-  return undefined;
-};
-function normalizeCoin(raw: CoinRaw): Coin {
-  return {
-    address: raw.address,
-    name: raw.name,
-    symbol: raw.symbol,
-    marketCap: toNum(raw.marketCap),
-    volume24h: toNum(raw.volume24h),
-    uniqueHolders: toNum(raw.uniqueHolders),
-    marketCapDelta24h: toNum(raw.marketCapDelta24h),
-    change24h: toNum(raw.change24h),
-    createdAt: raw.createdAt,
-  };
-}
+`;
 
 export async function GET() {
   try {
-    const res = await getCoinsTopVolume24h({ count: 100 });
-    const rawEdges = (res?.data?.exploreList?.edges ?? []) as ExploreEdgeRaw[];
-    if (!rawEdges.length) {
-      return NextResponse.json({ ok: false, error: "no-coins" }, { status: 500 });
+    // Zora API'sine POST isteği gönderiyoruz.
+    const apiResponse = await fetch(ZORA_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: GQL_QUERY }),
+      // Vercel'in önbelleklemesini engellemek için 'no-store' kullanıyoruz.
+      next: { revalidate: 0 },
+    });
+
+    if (!apiResponse.ok) {
+      throw new Error(`Zora API hatası: ${apiResponse.statusText}`);
     }
 
-    const candidatesRaw = take(shuffle(rawEdges), 20)
-      .map((e) => e?.node)
-      .filter((n): n is CoinRaw => Boolean(n && n.address));
+    const json = await apiResponse.json();
+    const tokens = json.data?.tokens?.nodes;
 
-    const candidates: Coin[] = candidatesRaw.map(normalizeCoin);
-
-    let chosen: Coin | null = null;
-    let details: Details | null = null;
-
-    for (const c of candidates) {
-      const [sw, cm, ho] = await Promise.allSettled([
-        getCoinSwaps({ address: c.address, chain: base.id, first: 10 }),
-        getCoinComments({ address: c.address, chain: base.id, count: 10 }),
-        getCoinHolders({ chainId: base.id, address: c.address, count: 10 }),
-      ]);
-
-      const swaps =
-        sw.status === "fulfilled"
-          ? ((sw.value?.data?.zora20Token?.swapActivities?.edges as Array<{ node?: SwapNode }>) ?? [])
-          : [];
-
-      // Only zoraComments exists
-      const comments =
-        cm.status === "fulfilled"
-          ? ((cm.value?.data?.zora20Token?.zoraComments?.edges as Array<{ node?: CommentNode }>) ?? [])
-          : [];
-
-      const holders =
-        ho.status === "fulfilled"
-          ? ((ho.value?.data?.zora20Token?.tokenBalances?.edges as Array<{ node?: HolderNode }>) ?? [])
-          : [];
-
-      if (comments.length || swaps.length || holders.length) {
-        chosen = c;
-        details = { swaps, comments, holders };
-        break;
-      }
+    if (!tokens || tokens.length === 0) {
+      throw new Error("Zora API'sinden coin listesi alınamadı.");
     }
 
-    if (!chosen) chosen = candidates[0];
+    // Gelen coin listesinden rastgele bir tane seçiyoruz.
+    const randomNode = tokens[Math.floor(Math.random() * tokens.length)];
+    const tokenData = randomNode.token;
 
-    // ⬇️ BURASI DÜZELTİLDİ: data.zora20Token
-    const meta = await getCoin({ address: chosen.address, chain: base.id });
-    const coinRaw = (meta?.data?.zora20Token as CoinRaw) ?? null;
-    const coin: Coin = coinRaw ? normalizeCoin(coinRaw) : chosen;
+    // API'den gelen veriyi ön yüzün beklediği formata dönüştürüyoruz.
+    const coin = {
+      name: tokenData.name,
+      symbol: tokenData.symbol,
+      address: tokenData.collectionAddress,
+      marketCap: tokenData.market?.marketCap?.usd,
+      volume24h: tokenData.market?.volume?.usd,
+      uniqueHolders: null, // Bu sorguyla bu veriyi direkt alamıyoruz, isterseniz başka bir sorgu gerekebilir.
+      change24h: tokenData.market?.change24h?.percent,
+      createdAt: null, // Aynı şekilde bu veri için de ayrı bir sorgu gerekebilir.
+    };
+
+    // Swaps ve Holders verilerini de ön yüz formatına uygun hale getiriyoruz.
+    const details = {
+      swaps: tokenData.mints?.nodes.map((mint: any) => ({
+        // Ön yüzdeki coerceSwap fonksiyonunun anlayacağı anahtarları burada bilerek kullanıyoruz.
+        transactionInfo: mint.transactionInfo,
+        value: mint.value,
+        quantity: mint.quantity,
+        type: 'BUY' // Mint işlemleri genellikle 'ALIM' olarak kabul edilebilir.
+      })) || [],
+      holders: tokenData.tokenHolders?.nodes.map((holder: any) => ({
+        owner: holder.ownerAddress,
+        balance: holder.balance,
+      })) || [],
+    };
 
     return NextResponse.json({ ok: true, coin, details });
-  } catch {
-    return NextResponse.json({ ok: false, error: "error" }, { status: 500 });
+
+  } catch (error) {
+    console.error("API Route Hatası:", error);
+    const errorMessage = error instanceof Error ? error.message : "Bilinmeyen bir sunucu hatası oluştu.";
+    return NextResponse.json({ ok: false, error: errorMessage }, { status: 500 });
   }
 }
