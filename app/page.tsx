@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /* ---------- Types ---------- */
 type Coin = {
@@ -47,6 +47,9 @@ type SpinResp = {
   error?: string;
 };
 
+type LogLevel = "ok" | "warn" | "info";
+type LogLine = { t: string; type: LogLevel };
+
 /* ---------- Helpers ---------- */
 function compact(n?: number | string) {
   const x = typeof n === "string" ? Number(n) : n;
@@ -83,23 +86,90 @@ function timeAgo(ts: number) {
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SpinResp | null>(null);
+  const [spins, setSpins] = useState<number>(0);
+
+  const [log, setLog] = useState<LogLine[]>([
+    { t: "💫 Live terminal ready. Press SPIN.", type: "info" },
+  ]);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const wheelRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<HTMLDivElement | null>(null);
+
+  function pushLog(line: LogLine) {
+    setLog((prev) => {
+      const next = [...prev, line].slice(-300);
+      // Auto-scroll
+      requestAnimationFrame(() => {
+        if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
+      });
+      return next;
+    });
+  }
 
   async function spin() {
+    if (loading) return;
     try {
       setLoading(true);
+      wheelRef.current?.classList.add("spinning");
+      pushLog({ t: "🎰 Spinning…", type: "info" });
+
       const r = await fetch("/api/spin", { cache: "no-store" });
       const j: SpinResp = await r.json();
+
+      if (!j.ok) {
+        pushLog({ t: `⚠ spin failed: ${j.error ?? "unexpected-error"}`, type: "warn" });
+        setData(j);
+        return;
+      }
+
       setData(j);
+      setSpins((s) => s + 1);
+
+      const c = j.coin!;
+      pushLog({
+        t: `✔ ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)}`,
+        type: "ok",
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      pushLog({ t: `⚠ spin failed: ${msg}`, type: "warn" });
     } finally {
       setLoading(false);
+      setTimeout(() => wheelRef.current?.classList.remove("spinning"), 350);
     }
   }
 
-  const c = data?.coin;
+  async function share() {
+    const c = data?.coin;
+    if (!c?.address) {
+      setToast("No coin to share.");
+      setTimeout(() => setToast(null), 1200);
+      return;
+    }
+    const url = `https://zora.co/coin/${c.address}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setToast("Link copied!");
+      pushLog({ t: `🔗 Copied: ${url}`, type: "info" });
+    } catch {
+      // Fallback alert
+      window.alert(url);
+      setToast("Link ready!");
+      pushLog({ t: `🔗 Link: ${url}`, type: "info" });
+    }
+    setTimeout(() => setToast(null), 1500);
+  }
+
+  const c = data?.coin ?? null;
+  const createdDate =
+    c?.createdAt != null
+      ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
+      : null;
 
   return (
     <main className="screen">
-      {/* Headline */}
+      {/* Header */}
       <header className="header">
         <h1 className="title">
           <span className="emoji">🎰</span> Zora Roulette — Web
@@ -107,14 +177,15 @@ export default function Home() {
         <p className="subtitle">Live coin picker with Zora GraphQL • not financial advice</p>
       </header>
 
-      {/* Roulette Display */}
+      {/* Roulette */}
       <section className="roulette">
-        <div className={`wheel ${loading ? "spinning" : ""}`}>
+        <div ref={wheelRef} className="wheel">
           <div className="ring" />
           <div className="center">
             <div className="center-copy">
               <div className="mode">Mode</div>
               <div className="mode-value">Volume</div>
+              <div className="spins">spins: {spins}</div>
             </div>
           </div>
           <div className="pointer" />
@@ -125,6 +196,9 @@ export default function Home() {
       <section className="actions">
         <button onClick={spin} disabled={loading} className={`btn ${loading ? "busy" : ""}`}>
           {loading ? "Spinning..." : "Spin"}
+        </button>
+        <button onClick={share} className="btn secondary" disabled={!c}>
+          Share
         </button>
       </section>
 
@@ -176,24 +250,37 @@ export default function Home() {
             </div>
           </div>
 
-          {c.createdAt && (
+          {createdDate && (
             <div className="created">
               Created:{" "}
-              {new Date(
-                typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt))
-              ).toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}
+              {createdDate.toLocaleDateString("en-US", {
+                day: "2-digit",
+                month: "short",
+                year: "numeric",
+              })}
               {" • "}
-              {timeAgo(
-                typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt))
-              )}
+              {timeAgo(createdDate.getTime())}
             </div>
           )}
         </section>
       )}
 
+      {/* Terminal Log */}
+      <section className="terminal" aria-label="Live log">
+        <div className="term-head">Terminal</div>
+        <div className="term-body" ref={termRef}>
+          {log.map((l, i) => (
+            <div className={`line ${l.type}`} key={`${l.type}-${i}`}>{l.t}</div>
+          ))}
+        </div>
+      </section>
+
+      {/* Toast */}
+      {toast && <div className="toast">{toast}</div>}
+
       <footer className="foot">Casino vibes only — have fun.</footer>
 
-      {/* --- styles: tek dosya içinde styled-jsx --- */}
+      {/* --- styles: styled-jsx global (reset/theme) --- */}
       <style jsx global>{`
         :root {
           --bg1: #050b12;
@@ -209,6 +296,7 @@ export default function Home() {
         body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Inter, Roboto, Arial; color: var(--text); }
       `}</style>
 
+      {/* --- styles: page --- */}
       <style jsx>{`
         .screen {
           min-height: 100vh;
@@ -280,6 +368,7 @@ export default function Home() {
         .center-copy { position: relative; text-align: center; z-index: 2; }
         .mode { font-size: 12px; color: var(--dim); }
         .mode-value { margin-top: 4px; font-weight: 800; filter: drop-shadow(0 0 18px rgba(34,211,238,0.35)); }
+        .spins { margin-top: 8px; font-size: 12px; color: var(--dim); }
 
         .pointer {
           position: absolute;
@@ -292,25 +381,34 @@ export default function Home() {
           filter: drop-shadow(0 0 8px rgba(34,211,238,0.7));
         }
 
-        .actions { margin-top: 22px; }
+        .actions { margin-top: 22px; display: flex; gap: 10px; }
         .btn {
           appearance: none;
           border: 0;
-          padding: 12px 20px;
+          padding: 12px 18px;
           border-radius: 14px;
           color: #001510;
-          font-weight: 700;
+          font-weight: 800;
           background: linear-gradient(180deg, #34d399, #10b981);
           box-shadow:
             0 12px 30px rgba(16,185,129,0.35),
             0 0 0 1px rgba(255,255,255,0.08) inset,
             0 1px 0 rgba(255,255,255,0.18) inset;
           cursor: pointer;
-          transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
+          transition: transform .15s ease, box-shadow .15s ease, filter .15s ease, opacity .15s ease;
         }
         .btn:hover { transform: translateY(-1px); filter: saturate(1.1); }
         .btn:active { transform: translateY(1px) scale(0.99); }
         .btn.busy { opacity: .7; cursor: not-allowed; }
+
+        .btn.secondary {
+          background: linear-gradient(180deg, #93c5fd, #60a5fa);
+          color: #001225;
+          box-shadow:
+            0 12px 30px rgba(59,130,246,0.35),
+            0 0 0 1px rgba(255,255,255,0.08) inset,
+            0 1px 0 rgba(255,255,255,0.18) inset;
+        }
 
         .error {
           margin-top: 16px;
@@ -380,7 +478,55 @@ export default function Home() {
 
         .created { margin-top: 10px; font-size: 12px; color: var(--dim); }
 
-        .foot { margin-top: 26px; font-size: 12px; color: var(--dim); }
+        .terminal {
+          margin-top: 24px;
+          width: 100%;
+          max-width: 900px;
+          border: 1px solid var(--panel-brd);
+          border-radius: 12px;
+          background: rgba(2,6,15,0.6);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+          overflow: hidden;
+        }
+        .term-head {
+          padding: 10px 12px;
+          font-size: 12px;
+          color: var(--dim);
+          background: rgba(255,255,255,0.04);
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .term-body {
+          max-height: 220px;
+          overflow: auto;
+          padding: 10px 12px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .line { padding: 2px 0; }
+        .line.ok { color: #b1f0c9; }
+        .line.warn { color: #fca5a5; }
+        .line.info { color: #9fb2c5; }
+
+        .toast {
+          position: fixed;
+          bottom: 16px;
+          right: 16px;
+          background: rgba(0,0,0,0.75);
+          color: #e6f0ff;
+          padding: 10px 12px;
+          border: 1px solid rgba(255,255,255,0.2);
+          border-radius: 10px;
+          font-size: 12px;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+          animation: toast-in .18s ease;
+        }
+        @keyframes toast-in {
+          from { transform: translateY(6px); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+
+        .foot { margin-top: 18px; font-size: 12px; color: var(--dim); }
       `}</style>
     </main>
   );
