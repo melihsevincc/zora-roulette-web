@@ -37,7 +37,7 @@ type HolderRow = {
 type HoldersPayload = HolderRow[] | { top10: HolderRow[] } | null | undefined;
 
 type DetailsBlock = {
-  swaps?: SwapUI[];
+  swaps?: Array<unknown>; // normalize edeceğiz
   comments?: CommentUI[];
   holders?: HoldersPayload;
 };
@@ -52,7 +52,7 @@ type SpinResp = {
 type LogLevel = "ok" | "warn" | "info";
 type LogLine = { t: string; type: LogLevel };
 
-/* ---------- Helpers ---------- */
+/* ---------- Helpers (UI format) ---------- */
 function compact(n?: number | string) {
   const x = typeof n === "string" ? Number(n) : n;
   if (x == null || Number.isNaN(x)) return "—";
@@ -98,34 +98,89 @@ function holdersArray(h: HoldersPayload): HolderRow[] {
   if (!h) return [];
   return Array.isArray(h) ? h : (h.top10 ?? []);
 }
-function toNumber(v?: number | string): number | null {
+function toNumber(v?: number | string | bigint): number | null {
   if (v == null) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  const n = Number(v);
+  if (typeof v === "bigint") return Number(v);
+  const s = String(v).replace(/[, _]/g, "");
+  const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
 function formatUSD(v?: number | string): string {
   const n = toNumber(v);
   if (n == null) return "—";
-  if (Math.abs(n) >= 1) {
-    return "~$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
-  }
+  if (Math.abs(n) >= 1) return "~$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
   return "~$" + n.toFixed(2);
 }
 function tsToDateParts(ts?: number | string): { date: string; time: string } {
   if (ts == null) return { date: "—", time: "—" };
-  const t =
-    typeof ts === "number"
-      ? ts
-      : (() => {
-        const parsed = Date.parse(String(ts));
-        return Number.isFinite(parsed) ? parsed : Date.now();
-      })();
+  let t: number;
+  if (typeof ts === "number") {
+    // seconds mı, ms mi?
+    t = ts < 2_000_000_000 ? ts * 1000 : ts;
+  } else {
+    const s = String(ts);
+    const maybeNum = Number(s);
+    if (Number.isFinite(maybeNum)) {
+      t = maybeNum < 2_000_000_000 ? maybeNum * 1000 : maybeNum;
+    } else {
+      const parsed = Date.parse(s);
+      t = Number.isFinite(parsed) ? parsed : Date.now();
+    }
+  }
   const d = new Date(t);
   return {
     date: d.toLocaleDateString("en-US", { day: "2-digit", month: "2-digit", year: "numeric" }),
     time: d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" }),
   };
+}
+
+/* ---------- Normalizers (boş alanları doldurur) ---------- */
+function isRec(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === "object";
+}
+
+function normalizeSwap(u: unknown): SwapUI {
+  if (!isRec(u)) return {};
+  const r = u as Record<string, unknown>;
+
+  // side
+  const sideStr =
+    (typeof r.side === "string" ? r.side :
+      typeof r.action === "string" ? r.action :
+        typeof r.type === "string" ? r.type :
+          undefined) ?? "";
+  let side: "BUY" | "SELL" | undefined;
+  if (/sell/i.test(sideStr)) side = "SELL";
+  else if (/buy/i.test(sideStr)) side = "BUY";
+
+  if (!side && typeof r.isBuy === "boolean") side = r.isBuy ? "BUY" : "SELL";
+
+  // amount (token amount)
+  const amountCandidate =
+    r.amount ?? r.amountToken ?? r.amountTokens ?? r.qty ?? r.quantity ?? r.size ?? r.amountOut ?? r.amountIn;
+  const amount = toNumber(amountCandidate) ?? String(amountCandidate ?? "") || undefined;
+
+  // approximate USD value
+  const usdCandidate =
+    r.usd ?? r.valueUsd ?? r.usdValue ?? r.approxUsd ?? r.approximateUsd ?? r.estimatedUsd ?? r.notionalUsd;
+  const usd = (toNumber(usdCandidate) ?? String(usdCandidate ?? "")) as number | string | undefined;
+
+  // timestamp
+  const tsCandidate =
+    r.ts ?? r.timestamp ?? r.time ?? r.blockTime ?? r.block_timestamp ?? r.createdAt ?? r.date;
+  let ts: number | string | undefined;
+  if (typeof tsCandidate === "string" || typeof tsCandidate === "number") {
+    ts = tsCandidate;
+  }
+
+  // yan ek: eğer side hâlâ yoksa, miktar işaretinden tahmin
+  if (!side) {
+    const n = toNumber(amount);
+    if (n != null) side = n < 0 ? "SELL" : "BUY";
+  }
+
+  return { side, amount, usd, ts };
 }
 
 /* ---------- Component ---------- */
@@ -169,7 +224,17 @@ export default function Home() {
         return;
       }
 
-      setData(j);
+      // normalize swaps (asıl düzeltme burası)
+      const normDetails: DetailsBlock | undefined = j.details
+        ? {
+          ...j.details,
+          swaps: Array.isArray(j.details.swaps)
+            ? (j.details.swaps.map(normalizeSwap) as SwapUI[])
+            : [],
+        }
+        : undefined;
+
+      setData({ ...j, details: normDetails });
       setSpins((s) => s + 1);
 
       const c = j.coin!;
@@ -194,10 +259,10 @@ export default function Home() {
           });
         }
 
-        const d = j.details;
+        const d = normDetails;
         if (d) {
           if (d.swaps && d.swaps.length) {
-            const first10 = d.swaps.slice(0, 10);
+            const first10 = (d.swaps as SwapUI[]).slice(0, 10);
             const buys = first10.filter((s) => (s.side ?? "BUY") === "BUY").length;
             const sells = first10.length - buys;
             pushLog({ t: `↳ swaps(top10): ${first10.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
@@ -252,7 +317,7 @@ export default function Home() {
 
   // Swaps & holders data prepared for UI
   const swapsTop10: SwapUI[] =
-    data?.details?.swaps ? data.details.swaps.slice(0, 10) : [];
+    Array.isArray(data?.details?.swaps) ? (data!.details!.swaps as SwapUI[]).slice(0, 10) : [];
   const holdersTop10: HolderRow[] = holdersArray(data?.details?.holders).slice(0, 10);
 
   // holders percentages (normalize to total of top10)
@@ -515,10 +580,7 @@ export default function Home() {
           filter: drop-shadow(0 10px 40px rgba(34,211,238,0.18));
         }
         .wheel.spinning { animation: spin 1.15s cubic-bezier(0.22,1,0.36,1); }
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(720deg); }
-        }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(720deg); } }
 
         .ring {
           position: absolute; inset: 0;
@@ -552,8 +614,7 @@ export default function Home() {
         .spins { margin-top: 8px; font-size: 12px; color: var(--dim); }
 
         .pointer {
-          position: absolute;
-          top: -10px; left: 50%;
+          position: absolute; top: -10px; left: 50%;
           transform: translateX(-50%);
           width: 0; height: 0;
           border-left: 10px solid transparent;
@@ -564,177 +625,92 @@ export default function Home() {
 
         .toolbar {
           margin-top: 22px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 18px;
-          flex-wrap: wrap;
+          display: flex; align-items: center; justify-content: center;
+          gap: 18px; flex-wrap: wrap;
         }
         .actions { display: flex; gap: 10px; }
         .toggles { display: flex; gap: 10px; align-items: center; }
         .toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); }
 
         .btn {
-          appearance: none;
-          border: 0;
-          padding: 12px 18px;
-          border-radius: 14px;
-          color: #001510;
-          font-weight: 800;
+          appearance: none; border: 0; padding: 12px 18px; border-radius: 14px;
+          color: #001510; font-weight: 800;
           background: linear-gradient(180deg, #34d399, #10b981);
-          box-shadow:
-            0 12px 30px rgba(16,185,129,0.35),
-            0 0 0 1px rgba(255,255,255,0.08) inset,
-            0 1px 0 rgba(255,255,255,0.18) inset;
-          cursor: pointer;
-          transition: transform .15s ease, box-shadow .15s ease, filter .15s ease, opacity .15s ease;
+          box-shadow: 0 12px 30px rgba(16,185,129,0.35),
+                      0 0 0 1px rgba(255,255,255,0.08) inset,
+                      0 1px 0 rgba(255,255,255,0.18) inset;
+          cursor: pointer; transition: transform .15s, box-shadow .15s, filter .15s, opacity .15s;
         }
         .btn:hover { transform: translateY(-1px); filter: saturate(1.1); }
         .btn:active { transform: translateY(1px) scale(0.99); }
         .btn.busy { opacity: .7; cursor: not-allowed; }
-
         .btn.secondary {
-          background: linear-gradient(180deg, #93c5fd, #60a5fa);
-          color: #001225;
-          box-shadow:
-            0 12px 30px rgba(59,130,246,0.35),
-            0 0 0 1px rgba(255,255,255,0.08) inset,
-            0 1px 0 rgba(255,255,255,0.18) inset;
+          background: linear-gradient(180deg, #93c5fd, #60a5fa); color: #001225;
+          box-shadow: 0 12px 30px rgba(59,130,246,0.35),
+                      0 0 0 1px rgba(255,255,255,0.08) inset,
+                      0 1px 0 rgba(255,255,255,0.18) inset;
         }
-        .btn.ghost {
-          background: rgba(255,255,255,0.06);
-          color: var(--text);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
-        }
+        .btn.ghost { background: rgba(255,255,255,0.06); color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1); }
 
         .error {
-          margin-top: 16px;
-          color: #fecaca;
-          background: rgba(239,68,68,0.08);
-          border: 1px solid rgba(239,68,68,0.25);
-          padding: 10px 12px;
-          border-radius: 12px;
-          font-size: 14px;
-          max-width: 680px;
-          width: calc(100% - 32px);
-          text-align: center;
+          margin-top: 16px; color: #fecaca; background: rgba(239,68,68,0.08);
+          border: 1px solid rgba(239,68,68,0.25); padding: 10px 12px; border-radius: 12px;
+          font-size: 14px; max-width: 680px; width: calc(100% - 32px); text-align: center;
         }
 
         .card {
-          margin-top: 28px;
-          width: 100%;
-          max-width: 900px;
-          border-radius: 16px;
+          margin-top: 28px; width: 100%; max-width: 900px; border-radius: 16px;
           border: 1px solid var(--panel-brd);
           background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
-          backdrop-filter: blur(8px);
-          padding: 16px;
-          position: relative;
+          backdrop-filter: blur(8px); padding: 16px; position: relative;
         }
         .card::after {
-          content: "";
-          position: absolute; inset: -1px;
-          border-radius: 16px;
-          box-shadow: 0 0 34px var(--glow);
-          pointer-events: none;
-          opacity: .35;
+          content: ""; position: absolute; inset: -1px; border-radius: 16px;
+          box-shadow: 0 0 34px var(--glow); pointer-events: none; opacity: .35;
         }
-        .card-row {
-          display: flex; align-items: center; justify-content: space-between; gap: 12px;
-        }
+        .card-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
         .coin-name { font-size: 18px; font-weight: 800; letter-spacing: .2px; }
         .symbol { color: #a9c7ff; font-weight: 700; }
         .address { margin-top: 4px; font-size: 12px; color: var(--dim); word-break: break-all; }
         .link { font-size: 12px; color: #89e6ff; text-decoration: underline; }
 
         .grid {
-          margin-top: 14px;
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0,1fr));
-          gap: 12px;
+          margin-top: 14px; display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px;
         }
-        @media (max-width: 760px) {
-          .grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
-        }
-        @media (max-width: 420px) {
-          .grid { grid-template-columns: 1fr; }
-        }
-        .metric {
-          border-radius: 14px;
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
-          padding: 10px 12px;
-        }
+        @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+        @media (max-width: 420px) { .grid { grid-template-columns: 1fr; } }
+        .metric { border-radius: 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 10px 12px; }
         .label { font-size: 12px; color: var(--dim); }
         .value { margin-top: 6px; font-weight: 800; }
-        .value.cyan { color: #99f6ff; }
-        .value.pink { color: #ffc2f1; }
-        .value.yellow { color: #ffe39b; }
-        .value.green { color: #a7f3d0; }
-        .value.red { color: #fca5a5; }
-
+        .value.cyan { color: #99f6ff; } .value.pink { color: #ffc2f1; }
+        .value.yellow { color: #ffe39b; } .value.green { color: #a7f3d0; } .value.red { color: #fca5a5; }
         .created { margin-top: 10px; font-size: 12px; color: var(--dim); }
 
         /* Panel (Swaps / Holders) */
         .panel {
-          margin-top: 22px;
-          width: 100%;
-          max-width: 900px;
-          border: 1px solid var(--panel-brd);
-          border-radius: 12px;
-          background: rgba(2,6,15,0.5);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
-          overflow: hidden;
+          margin-top: 22px; width: 100%; max-width: 900px; border: 1px solid var(--panel-brd);
+          border-radius: 12px; background: rgba(2,6,15,0.5); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden;
         }
-        .panel-head {
-          padding: 10px 12px;
-          font-size: 13px;
-          font-weight: 700;
-          color: #cbe7ff;
-          background: rgba(255,255,255,0.05);
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .panel-foot {
-          padding: 10px 12px;
-          font-size: 12px;
-          color: var(--dim);
-          border-top: 1px solid rgba(255,255,255,0.06);
-          background: rgba(255,255,255,0.03);
-        }
+        .panel-head { padding: 10px 12px; font-size: 13px; font-weight: 700; color: #cbe7ff; background: rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .panel-foot { padding: 10px 12px; font-size: 12px; color: var(--dim); border-top: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.03); }
 
         /* Swaps Table */
         .table { width: 100%; }
         .row {
-          display: grid;
-          grid-template-columns: 44px 100px 1fr 1fr 120px 80px;
-          gap: 8px;
-          padding: 8px 12px;
-          align-items: center;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
+          display: grid; grid-template-columns: 44px 100px 1fr 1fr 120px 80px; gap: 8px;
+          padding: 8px 12px; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.06);
         }
         .row:last-child { border-bottom: 0; }
-        .row.head {
-          background: rgba(255,255,255,0.04);
-          font-size: 12px;
-          color: var(--dim);
-          font-weight: 700;
-        }
+        .row.head { background: rgba(255,255,255,0.04); font-size: 12px; color: var(--dim); font-weight: 700; }
         .cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell.idx { color: var(--dim); }
         .cell.side { font-weight: 800; letter-spacing: .3px; }
-        .tag {
-          display: inline-flex; align-items: center; justify-content: center;
-          padding: 6px 10px; border-radius: 10px;
-          width: 90px;
-          color: #001510;
-        }
+        .tag { display: inline-flex; align-items: center; justify-content: center; padding: 6px 10px; border-radius: 10px; width: 90px; color: #001510; }
         .buy { background: var(--buy); }
         .sell { background: var(--sell); color: #240000; }
         .amt, .usd { font-weight: 700; }
 
-        @media (max-width: 760px) {
-          .row { grid-template-columns: 32px 84px 1fr 1fr 100px 70px; }
-        }
+        @media (max-width: 760px) { .row { grid-template-columns: 32px 84px 1fr 1fr 100px 70px; } }
         @media (max-width: 520px) {
           .row { grid-template-columns: 28px 84px 1fr 1fr; }
           .cell.date, .cell.time { display: none; }
@@ -745,74 +721,26 @@ export default function Home() {
         .bar-row { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; }
         .bar-label { font-size: 12px; color: #cfe7ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .bar-track {
-          position: relative;
-          height: 20px;
-          border-radius: 9999px;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.10);
-          overflow: hidden;
+          position: relative; height: 20px; border-radius: 9999px; background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.10); overflow: hidden;
         }
-        .bar-fill {
-          position: absolute; left: 0; top: 0; bottom: 0;
-          background: linear-gradient(90deg, #22d3ee, #a855f7);
-          box-shadow: 0 0 18px rgba(34,211,238,0.35) inset;
-        }
-        .bar-cap {
-          position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-          font-size: 12px; color: #e6f0ff; text-shadow: 0 1px 0 rgba(0,0,0,0.35);
-        }
-        @media (max-width: 640px) {
-          .bar-row { grid-template-columns: 1fr; }
-        }
+        .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #22d3ee, #a855f7); box-shadow: 0 0 18px rgba(34,211,238,0.35) inset; }
+        .bar-cap { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 12px; color: #e6f0ff; text-shadow: 0 1px 0 rgba(0,0,0,0.35); }
+        @media (max-width: 640px) { .bar-row { grid-template-columns: 1fr; } }
 
         /* Terminal */
-        .terminal {
-          margin-top: 24px;
-          width: 100%;
-          max-width: 900px;
-          border: 1px solid var(--panel-brd);
-          border-radius: 12px;
-          background: rgba(2,6,15,0.6);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
-          overflow: hidden;
-        }
-        .term-head {
-          padding: 10px 12px;
-          font-size: 12px;
-          color: var(--dim);
-          background: rgba(255,255,255,0.04);
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .term-body {
-          max-height: 240px;
-          overflow: auto;
-          padding: 10px 12px;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-          font-size: 12px;
-          line-height: 1.45;
-        }
+        .terminal { margin-top: 24px; width: 100%; max-width: 900px; border: 1px solid var(--panel-brd); border-radius: 12px; background: rgba(2,6,15,0.6); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden; }
+        .term-head { padding: 10px 12px; font-size: 12px; color: var(--dim); background: rgba(255,255,255,0.04); border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .term-body { max-height: 240px; overflow: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.45; }
         .line { padding: 2px 0; }
-        .line.ok { color: #b1f0c9; }
-        .line.warn { color: #fca5a5; }
-        .line.info { color: #9fb2c5; }
+        .line.ok { color: #b1f0c9; } .line.warn { color: #fca5a5; } .line.info { color: #9fb2c5; }
 
         .toast {
-          position: fixed;
-          bottom: 16px;
-          right: 16px;
-          background: rgba(0,0,0,0.75);
-          color: #e6f0ff;
-          padding: 10px 12px;
-          border: 1px solid rgba(255,255,255,0.2);
-          border-radius: 10px;
-          font-size: 12px;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-          animation: toast-in .18s ease;
+          position: fixed; bottom: 16px; right: 16px; background: rgba(0,0,0,0.75); color: #e6f0ff;
+          padding: 10px 12px; border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; font-size: 12px;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.35); animation: toast-in .18s ease;
         }
-        @keyframes toast-in {
-          from { transform: translateY(6px); opacity: 0; }
-          to { transform: translateY(0); opacity: 1; }
-        }
+        @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
         .foot { margin-top: 18px; font-size: 12px; color: var(--dim); }
       `}</style>
