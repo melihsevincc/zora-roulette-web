@@ -2,24 +2,64 @@
 
 import { useState } from "react";
 
+/* ---------- Types ---------- */
+type Coin = {
+  name: string;
+  symbol?: string;
+  address?: string;
+  marketCap?: number | string;
+  volume24h?: number | string;
+  uniqueHolders?: number | string;
+  marketCapDelta24h?: number;
+  change24h?: number;
+  createdAt?: number | string;
+};
+
+type SwapUI = {
+  side?: "BUY" | "SELL";
+  amount?: number | string;
+  usd?: number | string;
+  ts?: number | string;
+};
+
+type CommentUI = {
+  user?: string;
+  text?: string;
+  ts?: number | string;
+};
+
+type HolderRow = {
+  owner: string;
+  balance: string | number;
+  ens?: string;
+};
+
+type DetailsBlock = {
+  swaps: SwapUI[];
+  comments: CommentUI[];
+  holders: HolderRow[];
+};
+
 type SpinResp = {
   ok: boolean;
-  coin?: any;
-  details?: { swaps: any[]; comments: any[]; holders: any[] };
+  coin?: Coin;
+  details?: DetailsBlock;
   error?: string;
 };
 
-function compact(n?: number) {
-  if (n == null || isNaN(n)) return "—";
-  const a = Math.abs(n);
-  if (a >= 1e12) return (n / 1e12).toFixed(2) + "T";
-  if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
-  if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  if (a >= 1e3) return (n / 1e3).toFixed(2) + "K";
-  return n.toFixed(2).replace(/\.00$/, "");
+/* ---------- Helpers ---------- */
+function compact(n?: number | string) {
+  const x = typeof n === "string" ? Number(n) : n;
+  if (x == null || Number.isNaN(x)) return "—";
+  const a = Math.abs(x);
+  if (a >= 1e12) return (x / 1e12).toFixed(2) + "T";
+  if (a >= 1e9) return (x / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (x / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (x / 1e3).toFixed(2) + "K";
+  return x.toFixed(2).replace(/\.00$/, "");
 }
 function pct(v?: number) {
-  if (v == null || isNaN(v)) return "N/A";
+  if (v == null || Number.isNaN(v)) return "N/A";
   const s = v > 0 ? "+" : "";
   return `${s}${v.toFixed(2)}%`;
 }
@@ -39,16 +79,20 @@ function timeAgo(ts: number) {
   return `${yrs}y ago`;
 }
 
+/* ---------- Component ---------- */
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SpinResp | null>(null);
 
   async function spin() {
-    setLoading(true);
-    const r = await fetch("/api/spin", { cache: "no-store" });
-    const j: SpinResp = await r.json();
-    setData(j);
-    setLoading(false);
+    try {
+      setLoading(true);
+      const r = await fetch("/api/spin", { cache: "no-store" });
+      const j: SpinResp = await r.json();
+      setData(j);
+    } finally {
+      setLoading(false);
+    }
   }
 
   const c = data?.coin;
@@ -75,24 +119,28 @@ export default function Home() {
           <div className="text-xl font-semibold">
             {c.name} {c.symbol ? `(${c.symbol})` : ""}
           </div>
-          <div className="text-neutral-400 text-xs break-all">0x{c.address?.replace(/^0x/, "")}</div>
+          <div className="text-neutral-400 text-xs break-all">
+            {c.address ? `0x${c.address.replace(/^0x/, "")}` : ""}
+          </div>
 
           <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
             <div className="bg-white/5 rounded-xl p-3">
               <div className="text-neutral-400">Market Cap</div>
-              <div className="text-cyan-300 font-semibold">{compact(Number(c.marketCap))}</div>
+              <div className="text-cyan-300 font-semibold">{compact(c.marketCap)}</div>
             </div>
             <div className="bg-white/5 rounded-xl p-3">
               <div className="text-neutral-400">24h Volume</div>
-              <div className="text-pink-300 font-semibold">{compact(Number(c.volume24h))}</div>
+              <div className="text-pink-300 font-semibold">{compact(c.volume24h)}</div>
             </div>
             <div className="bg-white/5 rounded-xl p-3">
               <div className="text-neutral-400">Holders</div>
-              <div className="text-yellow-300 font-semibold">{compact(Number(c.uniqueHolders))}</div>
+              <div className="text-yellow-300 font-semibold">{compact(c.uniqueHolders)}</div>
             </div>
             <div className="bg-white/5 rounded-xl p-3">
               <div className="text-neutral-400">24h Cap Δ</div>
-              <div className={(Number(c.marketCapDelta24h) > 0 ? "text-emerald-300" : "text-red-300") + " font-semibold"}>
+              <div
+                className={(Number(c.marketCapDelta24h ?? c.change24h) > 0 ? "text-emerald-300" : "text-red-300") + " font-semibold"}
+              >
                 {pct(Number(c.marketCapDelta24h ?? c.change24h))}
               </div>
             </div>
@@ -101,10 +149,13 @@ export default function Home() {
           {c.createdAt && (
             <div className="mt-3 text-xs text-neutral-400">
               Created:{" "}
-              {new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(c.createdAt))
-                .toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}
+              {new Date(
+                typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt))
+              ).toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}
               {" • "}
-              {timeAgo(typeof c.createdAt === "number" ? c.createdAt : Date.parse(c.createdAt))}
+              {timeAgo(
+                typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt))
+              )}
             </div>
           )}
 
