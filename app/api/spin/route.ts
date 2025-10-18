@@ -23,12 +23,15 @@ interface SwapNode {
   activityType?: string;
   coinAmount?: string | number | bigint;
   amount?: string | number | bigint;
-  usdValue?: string | number;
-  coinUsdValue?: string | number;
   blockTimestamp?: string | number;
   timestamp?: string | number;
   createdAt?: string | number;
   time?: string | number;
+  fromAddress?: string;
+  toAddress?: string;
+  userAddress?: string;
+  trader?: string;
+  account?: string;
 }
 
 interface HolderNode {
@@ -72,7 +75,7 @@ interface ProcessedSwap {
   index: number;
   side: 'BUY' | 'SELL';
   amount: number;
-  usdValue: number | null;
+  address: string;
   date: string;
   time: string;
   timestamp: number | null;
@@ -173,7 +176,7 @@ function parseTimestamp(timestamp: unknown): number | null {
   }
 }
 
-// Format timestamp for display
+// Format timestamp for display (English only, no locale)
 function formatTimestamp(ts: number | null): { date: string; time: string } {
   if (!ts) {
     return { date: '—', time: '—' };
@@ -188,17 +191,17 @@ function formatTimestamp(ts: number | null): { date: string; time: string } {
       return { date: '—', time: '—' };
     }
 
-    const dateStr = date.toLocaleDateString('en-US', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric'
-    });
+    // Format date manually in English: "18 Oct, 2025"
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const day = date.getUTCDate().toString().padStart(2, '0');
+    const month = months[date.getUTCMonth()];
+    const yearStr = date.getUTCFullYear();
+    const dateStr = `${day} ${month}, ${yearStr}`;
 
-    const timeStr = date.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
+    // Format time manually: "14:35"
+    const hours = date.getUTCHours().toString().padStart(2, '0');
+    const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+    const timeStr = `${hours}:${minutes}`;
 
     return { date: dateStr, time: timeStr };
   } catch {
@@ -227,6 +230,13 @@ async function fetchTokenMeta(address: string, chainId: number) {
   }
 }
 
+// Shorten address for display
+function shortAddress(addr: string | undefined): string {
+  if (!addr) return '—';
+  if (addr.length <= 10) return addr;
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
+
 // Process swaps with proper timestamp handling
 function processSwaps(resp: ApiResponse | null, decimalsGuess = 18): ProcessedSwap[] {
   const edges = resp?.data?.zora20Token?.swapActivities?.edges || [];
@@ -246,7 +256,9 @@ function processSwaps(resp: ApiResponse | null, decimalsGuess = 18): ProcessedSw
     const amtRaw = node.coinAmount ?? node.amount ?? '0';
     const amount = formatBalanceRaw(amtRaw, tokenDecimals);
 
-    const usdValue = node.usdValue ?? node.coinUsdValue ?? null;
+    // Get trader address - try multiple fields
+    const rawAddress = node.fromAddress ?? node.toAddress ?? node.userAddress ?? node.trader ?? node.account;
+    const address = shortAddress(rawAddress);
 
     // Try multiple timestamp fields
     const rawTs = node.blockTimestamp ?? node.timestamp ?? node.createdAt ?? node.time;
@@ -257,7 +269,7 @@ function processSwaps(resp: ApiResponse | null, decimalsGuess = 18): ProcessedSw
       index: idx + 1,
       side: isBuy ? 'BUY' : 'SELL',
       amount,
-      usdValue: usdValue != null ? Number(usdValue) : null,
+      address,
       date,
       time,
       timestamp: parsedTs,
