@@ -212,17 +212,18 @@ async function fetchTokenMeta(address: string, chainId: number) {
     const r = await getCoin({ address, chain: chainId });
     const c = r?.data?.zora20Token;
 
-    if (!c) return { decimals: null, supplyRaw: null };
+    if (!c) return { decimals: 18, supplyRaw: null };
 
-    const decimals = c.decimals ?? null;
+    // Zora tokens are always 18 decimals (ERC20 standard on Base)
+    const decimals = 18;
     const supplyRaw = c.totalSupply ?? null;
 
     return {
-      decimals: decimals != null ? Number(decimals) : null,
+      decimals,
       supplyRaw: supplyRaw != null ? String(supplyRaw) : null
     };
   } catch {
-    return { decimals: null, supplyRaw: null };
+    return { decimals: 18, supplyRaw: null };
   }
 }
 
@@ -272,9 +273,10 @@ async function processHolders(resp: ApiResponse | null, coinAddress: string, cha
   // Fetch token metadata for accurate calculations
   const meta = await fetchTokenMeta(coinAddress, chainId);
 
-  const tokenDecimals = meta.decimals != null
-    ? meta.decimals
-    : (resp?.data?.zora20Token?.decimals != null ? Number(resp.data.zora20Token.decimals) : 18);
+  // Zora tokens are always 18 decimals, but check response first
+  const tokenDecimals = resp?.data?.zora20Token?.decimals != null
+    ? Number(resp.data.zora20Token.decimals)
+    : meta.decimals;
 
   let totalSupply = 0;
   if (meta.supplyRaw) {
