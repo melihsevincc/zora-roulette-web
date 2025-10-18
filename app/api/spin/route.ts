@@ -18,6 +18,82 @@ import type {
 setApiKey(process.env.ZORA_API_KEY || "");
 export const dynamic = "force-dynamic";
 
+// Type definitions
+interface SwapNode {
+  activityType?: string;
+  coinAmount?: string | number | bigint;
+  amount?: string | number | bigint;
+  usdValue?: string | number;
+  coinUsdValue?: string | number;
+  blockTimestamp?: string | number;
+  timestamp?: string | number;
+  createdAt?: string | number;
+  time?: string | number;
+}
+
+interface HolderNode {
+  ownerProfile?: { handle?: string };
+  owner?: { handle?: string };
+  ownerAddress?: string;
+  address?: string;
+  balance?: string | number | bigint;
+  formattedBalance?: string | number | bigint;
+}
+
+interface CommentNode {
+  userProfile?: { handle?: string };
+  user?: { handle?: string };
+  userAddress?: string;
+  comment?: string;
+  text?: string;
+  timestamp?: string | number;
+  createdAt?: string | number;
+  time?: string | number;
+}
+
+interface EdgeWrapper<T> {
+  node?: T;
+}
+
+interface ApiResponse {
+  data?: {
+    zora20Token?: {
+      decimals?: number;
+      swapActivities?: { edges?: EdgeWrapper<SwapNode>[] };
+      zoraComments?: { edges?: EdgeWrapper<CommentNode>[] };
+      tokenBalances?: { edges?: EdgeWrapper<HolderNode>[] };
+      totalSupply?: string | number;
+      supply?: string | number;
+    };
+    coin?: Record<string, unknown>;
+  };
+  coin?: Record<string, unknown>;
+}
+
+interface ProcessedSwap {
+  index: number;
+  side: 'BUY' | 'SELL';
+  amount: number;
+  usdValue: number | null;
+  date: string;
+  time: string;
+  timestamp: number | null;
+}
+
+interface ProcessedHolder {
+  rank: number;
+  holder: string;
+  balance: number;
+  percentage: number;
+}
+
+interface ProcessedComment {
+  author: string;
+  text: string;
+  date: string;
+  timestamp: number | null;
+}
+
 // Utils
 function shuffle<T>(arr: T[]): T[] {
   const a = arr.slice();
@@ -67,7 +143,7 @@ function formatBalanceRaw(raw: string | number | bigint, decimals = 18): number 
 }
 
 // Parse timestamp properly - handle various formats
-function parseTimestamp(timestamp: any): number | null {
+function parseTimestamp(timestamp: unknown): number | null {
   if (!timestamp) return null;
 
   try {
@@ -138,8 +214,8 @@ async function fetchTokenMeta(address: string, chainId: number) {
     const r = await getCoin({ address, chain: chainId });
     const c = r?.data?.zora20Token || r?.data?.coin || r?.coin || r;
 
-    const decimals = c?.decimals ?? c?.token?.decimals ?? null;
-    const supplyRaw = c?.totalSupply ?? c?.supply ?? c?.stats?.totalSupply ?? null;
+    const decimals = (c as Record<string, unknown>)?.decimals ?? (c as Record<string, unknown>)?.token?.decimals ?? null;
+    const supplyRaw = (c as Record<string, unknown>)?.totalSupply ?? (c as Record<string, unknown>)?.supply ?? (c as Record<string, unknown>)?.stats?.totalSupply ?? null;
 
     return {
       decimals: decimals != null ? Number(decimals) : null,
@@ -151,7 +227,7 @@ async function fetchTokenMeta(address: string, chainId: number) {
 }
 
 // Process swaps with proper timestamp handling
-function processSwaps(resp: any, decimalsGuess = 18) {
+function processSwaps(resp: ApiResponse | null, decimalsGuess = 18): ProcessedSwap[] {
   const edges = resp?.data?.zora20Token?.swapActivities?.edges || [];
   if (!edges.length) return [];
 
@@ -159,7 +235,7 @@ function processSwaps(resp: any, decimalsGuess = 18) {
     ? Number(resp.data.zora20Token.decimals)
     : decimalsGuess;
 
-  return edges.slice(0, 10).map((edge: any, idx: number) => {
+  return edges.slice(0, 10).map((edge, idx) => {
     const node = edge?.node;
     if (!node) return null;
 
@@ -184,12 +260,12 @@ function processSwaps(resp: any, decimalsGuess = 18) {
       date,
       time,
       timestamp: parsedTs,
-    };
-  }).filter(Boolean);
+    } as ProcessedSwap;
+  }).filter((item): item is ProcessedSwap => item !== null);
 }
 
 // Process holders with percentage calculation
-async function processHolders(resp: any, coinAddress: string, chainId = base.id) {
+async function processHolders(resp: ApiResponse | null, coinAddress: string, chainId = base.id): Promise<ProcessedHolder[]> {
   const edges = resp?.data?.zora20Token?.tokenBalances?.edges || [];
   if (!edges.length) return [];
 
@@ -204,11 +280,13 @@ async function processHolders(resp: any, coinAddress: string, chainId = base.id)
   if (meta.supplyRaw) {
     try {
       totalSupply = formatBalanceRaw(meta.supplyRaw, tokenDecimals);
-    } catch { }
+    } catch {
+      // ignore
+    }
   }
 
   // Calculate balances for top 10
-  const holders = edges.slice(0, 10).map((edge: any) => {
+  const holders = edges.slice(0, 10).map((edge) => {
     const node = edge?.node;
     if (!node) return null;
 
@@ -222,7 +300,7 @@ async function processHolders(resp: any, coinAddress: string, chainId = base.id)
     const balance = formatBalanceRaw(balRaw, tokenDecimals);
 
     return { holder, balance };
-  }).filter(Boolean);
+  }).filter((item): item is { holder: string; balance: number } => item !== null);
 
   // Calculate total of top 10 for percentage
   const top10Total = holders.reduce((sum, h) => sum + h.balance, 0);
@@ -242,13 +320,13 @@ async function processHolders(resp: any, coinAddress: string, chainId = base.id)
 }
 
 // Process comments
-function processComments(resp: any) {
+function processComments(resp: ApiResponse | null): ProcessedComment[] {
   const edges = resp?.data?.zora20Token?.zoraComments?.edges || [];
   if (!edges.length) return [];
 
   return edges
     .slice(0, 10)
-    .map((edge: any) => {
+    .map((edge) => {
       const node = edge?.node;
       if (!node) return null;
 
@@ -275,7 +353,7 @@ function processComments(resp: any) {
         timestamp: parsedTs,
       };
     })
-    .filter(Boolean);
+    .filter((item): item is ProcessedComment => item !== null);
 }
 
 export async function GET() {
@@ -294,9 +372,9 @@ export async function GET() {
     const candidates: Coin[] = candidatesRaw.map(normalizeCoin);
 
     let chosen: Coin | null = null;
-    let swapsData: any[] = [];
-    let commentsData: any[] = [];
-    let holdersData: any[] = [];
+    let swapsData: ProcessedSwap[] = [];
+    let commentsData: ProcessedComment[] = [];
+    let holdersData: ProcessedHolder[] = [];
 
     // Find coin with activity
     for (const c of candidates) {
@@ -322,10 +400,10 @@ export async function GET() {
         chosen = c;
 
         // Process the data with proper formatting
-        swapsData = processSwaps(sw.status === "fulfilled" ? sw.value : null);
-        commentsData = processComments(cm.status === "fulfilled" ? cm.value : null);
+        swapsData = processSwaps(sw.status === "fulfilled" ? sw.value as ApiResponse : null);
+        commentsData = processComments(cm.status === "fulfilled" ? cm.value as ApiResponse : null);
         holdersData = await processHolders(
-          ho.status === "fulfilled" ? ho.value : null,
+          ho.status === "fulfilled" ? ho.value as ApiResponse : null,
           c.address,
           base.id
         );
@@ -342,10 +420,10 @@ export async function GET() {
         getCoinHolders({ chainId: base.id, address: chosen.address, count: 10 }),
       ]);
 
-      swapsData = processSwaps(sw.status === "fulfilled" ? sw.value : null);
-      commentsData = processComments(cm.status === "fulfilled" ? cm.value : null);
+      swapsData = processSwaps(sw.status === "fulfilled" ? sw.value as ApiResponse : null);
+      commentsData = processComments(cm.status === "fulfilled" ? cm.value as ApiResponse : null);
       holdersData = await processHolders(
-        ho.status === "fulfilled" ? ho.value : null,
+        ho.status === "fulfilled" ? ho.value as ApiResponse : null,
         chosen.address,
         base.id
       );
