@@ -65,9 +65,7 @@ interface ApiResponse {
       totalSupply?: string | number;
       supply?: string | number;
     };
-    coin?: Record<string, unknown>;
   };
-  coin?: Record<string, unknown>;
 }
 
 interface ProcessedSwap {
@@ -212,10 +210,12 @@ function formatTimestamp(ts: number | null): { date: string; time: string } {
 async function fetchTokenMeta(address: string, chainId: number) {
   try {
     const r = await getCoin({ address, chain: chainId });
-    const c = r?.data?.zora20Token || r?.data?.coin || r?.coin || r;
+    const c = r?.data?.zora20Token;
 
-    const decimals = (c as Record<string, unknown>)?.decimals ?? (c as Record<string, unknown>)?.token?.decimals ?? null;
-    const supplyRaw = (c as Record<string, unknown>)?.totalSupply ?? (c as Record<string, unknown>)?.supply ?? (c as Record<string, unknown>)?.stats?.totalSupply ?? null;
+    if (!c) return { decimals: null, supplyRaw: null };
+
+    const decimals = c.decimals ?? null;
+    const supplyRaw = c.totalSupply ?? null;
 
     return {
       decimals: decimals != null ? Number(decimals) : null,
@@ -431,7 +431,7 @@ export async function GET() {
 
     // Get full coin metadata
     const meta = await getCoin({ address: chosen.address, chain: base.id });
-    const coinRaw = meta?.data?.zora20Token ?? meta?.data?.coin ?? meta?.coin ?? null;
+    const coinRaw = meta?.data?.zora20Token;
     const coin: Coin = coinRaw ? normalizeCoin(coinRaw as CoinRaw) : chosen;
 
     return NextResponse.json({
