@@ -18,6 +18,22 @@ import type {
 setApiKey(process.env.ZORA_API_KEY || "");
 export const dynamic = "force-dynamic";
 
+// In-memory cache to track recently shown coins
+const recentCoins = new Set<string>();
+const MAX_RECENT = 50; // Track last 50 coins
+
+function addToRecent(address: string) {
+  recentCoins.add(address.toLowerCase());
+  if (recentCoins.size > MAX_RECENT) {
+    const first = recentCoins.values().next().value;
+    recentCoins.delete(first);
+  }
+}
+
+function isRecent(address: string): boolean {
+  return recentCoins.has(address.toLowerCase());
+}
+
 // Type definitions
 interface SwapNode {
   activityType?: string;
@@ -27,6 +43,7 @@ interface SwapNode {
   timestamp?: string | number;
   createdAt?: string | number;
   time?: string | number;
+  senderAddress?: string;
   fromAddress?: string;
   toAddress?: string;
   userAddress?: string;
@@ -86,6 +103,7 @@ interface ProcessedHolder {
   holder: string;
   balance: number;
   percentage: number;
+  isTopHolder?: boolean;
 }
 
 interface ProcessedComment {
@@ -198,10 +216,13 @@ function formatTimestamp(ts: number | null): { date: string; time: string } {
     const yearStr = date.getUTCFullYear();
     const dateStr = `${day} ${month}, ${yearStr}`;
 
-    // Format time manually: "14:35"
-    const hours = date.getUTCHours().toString().padStart(2, '0');
+    // Format time in 12-hour format with AM/PM
+    let hours = date.getUTCHours();
     const minutes = date.getUTCMinutes().toString().padStart(2, '0');
-    const timeStr = `${hours}:${minutes}`;
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12; // 0 should be 12
+    const timeStr = `${hours}:${minutes} ${ampm}`;
 
     return { date: dateStr, time: timeStr };
   } catch {
@@ -256,9 +277,22 @@ function processSwaps(resp: ApiResponse | null, decimalsGuess = 18): ProcessedSw
     const amtRaw = node.coinAmount ?? node.amount ?? '0';
     const amount = formatBalanceRaw(amtRaw, tokenDecimals);
 
-    // Get trader address - try multiple fields
-    const rawAddress = node.fromAddress ?? node.toAddress ?? node.userAddress ?? node.trader ?? node.account;
+    // Get trader address - try multiple fields (senderAddress is primary field)
+    const rawAddress = node.senderAddress ?? node.fromAddress ?? node.toAddress ?? node.userAddress ?? node.trader ?? node.account;
     const address = shortAddress(rawAddress);
+
+    // Debug log for first swap
+    if (idx === 0) {
+      console.log("Swap node fields:", {
+        senderAddress: node.senderAddress,
+        fromAddress: node.fromAddress,
+        toAddress: node.toAddress,
+        userAddress: node.userAddress,
+        trader: node.trader,
+        account: node.account,
+        final: address
+      });
+    }
 
     // Try multiple timestamp fields
     const rawTs = node.blockTimestamp ?? node.timestamp ?? node.createdAt ?? node.time;
@@ -329,6 +363,7 @@ async function processHolders(resp: ApiResponse | null, coinAddress: string, cha
       holder: h.holder,
       balance: h.balance,
       percentage: Number(percentage.toFixed(2)),
+      isTopHolder: idx === 0, // Mark #1 holder
     };
   });
 }
@@ -370,16 +405,22 @@ function processComments(resp: ApiResponse | null): ProcessedComment[] {
     .filter((item): item is ProcessedComment => item !== null);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const res = await getCoinsTopVolume24h({ count: 100 });
+    // Get search params for session tracking
+    const { searchParams } = new URL(request.url);
+    const sessionId = searchParams.get('session') || Date.now().toString();
+
+    // Fetch larger pool for more variety
+    const res = await getCoinsTopVolume24h({ count: 200 });
     const rawEdges = (res?.data?.exploreList?.edges ?? []) as ExploreEdgeRaw[];
 
     if (!rawEdges.length) {
       return NextResponse.json({ ok: false, error: "no-coins" }, { status: 500 });
     }
 
-    const candidatesRaw = take(shuffle(rawEdges), 20)
+    // Shuffle and take random 40 from pool to ensure variety
+    const candidatesRaw = take(shuffle(rawEdges), 40)
       .map((e) => e?.node)
       .filter((n): n is CoinRaw => Boolean(n && n.address));
 
@@ -390,8 +431,11 @@ export async function GET() {
     let commentsData: ProcessedComment[] = [];
     let holdersData: ProcessedHolder[] = [];
 
-    // Find coin with activity
-    for (const c of candidates) {
+    // Try to find coin with activity (max 15 attempts for speed)
+    const maxAttempts = Math.min(15, candidates.length);
+    for (let i = 0; i < maxAttempts; i++) {
+      const c = candidates[i];
+
       const [sw, cm, ho] = await Promise.allSettled([
         getCoinSwaps({ address: c.address, chain: base.id, first: 12 }),
         getCoinComments({ address: c.address, chain: base.id, count: 20 }),
@@ -410,6 +454,7 @@ export async function GET() {
         ? ho.value.data.zora20Token.tokenBalances.edges
         : [];
 
+      // Accept coin if it has any activity
       if (comments.length > 0 || swaps.length > 0 || holders.length > 0) {
         chosen = c;
 
@@ -425,7 +470,27 @@ export async function GET() {
       }
     }
 
-    // Fallback to first candidate
+    // Fallback: pick random coin from remaining candidates
+    if (!chosen && candidates.length > maxAttempts) {
+      const randomIndex = Math.floor(Math.random() * (candidates.length - maxAttempts)) + maxAttempts;
+      chosen = candidates[randomIndex];
+
+      const [sw, cm, ho] = await Promise.allSettled([
+        getCoinSwaps({ address: chosen.address, chain: base.id, first: 12 }),
+        getCoinComments({ address: chosen.address, chain: base.id, count: 20 }),
+        getCoinHolders({ chainId: base.id, address: chosen.address, count: 10 }),
+      ]);
+
+      swapsData = processSwaps(sw.status === "fulfilled" ? sw.value as ApiResponse : null);
+      commentsData = processComments(cm.status === "fulfilled" ? cm.value as ApiResponse : null);
+      holdersData = await processHolders(
+        ho.status === "fulfilled" ? ho.value as ApiResponse : null,
+        chosen.address,
+        base.id
+      );
+    }
+
+    // Final fallback
     if (!chosen) {
       chosen = candidates[0];
       const [sw, cm, ho] = await Promise.allSettled([
@@ -448,6 +513,12 @@ export async function GET() {
     const coinRaw = meta?.data?.zora20Token;
     const coin: Coin = coinRaw ? normalizeCoin(coinRaw as CoinRaw) : chosen;
 
+    // Calculate some fun stats
+    const totalActivity = swapsData.length + commentsData.length + holdersData.length;
+    const buyCount = swapsData.filter(s => s.side === 'BUY').length;
+    const sellCount = swapsData.filter(s => s.side === 'SELL').length;
+    const sentiment = buyCount > sellCount ? 'bullish' : buyCount < sellCount ? 'bearish' : 'neutral';
+
     return NextResponse.json({
       ok: true,
       coin,
@@ -456,6 +527,13 @@ export async function GET() {
         comments: commentsData,
         holders: holdersData,
       },
+      stats: {
+        totalActivity,
+        buyCount,
+        sellCount,
+        sentiment,
+        timestamp: Date.now(),
+      }
     });
   } catch (error) {
     console.error("Spin API error:", error);

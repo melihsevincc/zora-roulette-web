@@ -18,8 +18,10 @@ type Coin = {
 type SwapUI = {
   side?: "BUY" | "SELL";
   amount?: number | string;
-  usd?: number | string;
+  address?: string;
   ts?: number | string;
+  date?: string;
+  time?: string;
 };
 
 type CommentUI = {
@@ -29,15 +31,19 @@ type CommentUI = {
 };
 
 type HolderRow = {
-  owner: string;
+  rank?: number;
+  holder: string;
   balance: string | number;
+  percentage?: number;
+  isTopHolder?: boolean;
   ens?: string;
+  owner?: string;
 };
 
 type HoldersPayload = HolderRow[] | { top10: HolderRow[] } | null | undefined;
 
 type DetailsBlock = {
-  swaps?: unknown[]; // normalize edeceğiz
+  swaps?: SwapUI[];
   comments?: CommentUI[];
   holders?: HoldersPayload;
 };
@@ -46,6 +52,13 @@ type SpinResp = {
   ok: boolean;
   coin?: Coin;
   details?: DetailsBlock;
+  stats?: {
+    totalActivity: number;
+    buyCount: number;
+    sellCount: number;
+    sentiment: 'bullish' | 'bearish' | 'neutral';
+    timestamp: number;
+  };
   error?: string;
 };
 
@@ -68,15 +81,6 @@ function pct(v?: number) {
   const s = v > 0 ? "+" : "";
   return `${s}${v.toFixed(2)}%`;
 }
-function isSecondEpoch(t: number) {
-  // 13 digits ~ ms, 10 digits ~ s
-  return t > 0 && t < 1e12;
-}
-function toEpochMs(v: number | string) {
-  const n = typeof v === "number" ? v : Number(v);
-  if (!Number.isFinite(n)) return Date.now();
-  return isSecondEpoch(n) ? n * 1000 : n;
-}
 function timeAgo(ts: number) {
   const d = Math.max(0, Date.now() - ts);
   const s = Math.floor(d / 1000);
@@ -93,12 +97,9 @@ function timeAgo(ts: number) {
   return `${yrs}y ago`;
 }
 function shortAddr(a?: string) {
-  if (!a) return "";
+  if (!a) return "—";
   if (a.includes(".")) return a;
   return a.length > 10 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
-}
-function trunc(s: string, len = 80) {
-  return s.length > len ? s.slice(0, len - 1) + "…" : s;
 }
 function nowHHMMSS() {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -113,85 +114,14 @@ function toNumber(v?: number | string): number | null {
   const n = Number(String(v).replaceAll(",", ""));
   return Number.isFinite(n) ? n : null;
 }
-function formatUSD(v?: number | string): string {
-  const n = toNumber(v);
-  if (n == null) return "—";
-  if (Math.abs(n) >= 1) return "~$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
-  return "~$" + n.toFixed(2);
-}
-function tsToDateParts(ts?: number | string): { date: string; time: string } {
-  if (ts == null) return { date: "—", time: "—" };
-  const d = new Date(toEpochMs(ts));
-  return {
-    date: d.toLocaleDateString("en-US", { day: "2-digit", month: "2-digit", year: "numeric" }),
-    time: d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" }),
-  };
-}
-
-/* ---------- Swap normalizer (no any) ---------- */
-type UnknownSwap = Record<string, unknown>;
-
-function pickStr(obj: UnknownSwap, keys: string[]): string | undefined {
-  for (const k of keys) {
-    const v = obj[k];
-    if (typeof v === "string" && v.trim()) return v;
-  }
-  return undefined;
-}
-function pickBool(obj: UnknownSwap, keys: string[]): boolean | undefined {
-  for (const k of keys) {
-    const v = obj[k];
-    if (typeof v === "boolean") return v;
-  }
-  return undefined;
-}
-function pickNum(obj: UnknownSwap, keys: string[]): number | undefined {
-  for (const k of keys) {
-    const raw = obj[k];
-    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-    if (typeof raw === "string") {
-      const n = Number(raw.replaceAll(",", ""));
-      if (Number.isFinite(n)) return n;
-    }
-  }
-  return undefined;
-}
-
-function coerceSwap(s: UnknownSwap): SwapUI {
-  // side
-  const action = pickStr(s, ["side", "action", "type"])?.toUpperCase();
-  const isBuy = pickBool(s, ["isBuy"]);
-  const side: "BUY" | "SELL" | undefined =
-    action === "BUY" || action === "SELL"
-      ? (action as "BUY" | "SELL")
-      : isBuy === true
-        ? "BUY"
-        : isBuy === false
-          ? "SELL"
-          : undefined;
-
-  // amount (token side)
-  const amount =
-    pickNum(s, ["amount", "qty", "quantity", "tokenAmount", "baseAmount", "size"]) ?? undefined;
-
-  // usd (quote)
-  const usd =
-    pickNum(s, ["usd", "usdValue", "valueUsd", "quoteUsd", "usd_amount", "quoteAmountUsd"]) ??
-    undefined;
-
-  // timestamp
-  const tsRaw =
-    pickNum(s, ["ts", "timestamp", "time", "createdAt", "blockTime"]) ??
-    (pickStr(s, ["ts", "timestamp", "time", "createdAt"]) as string | undefined);
-
-  return { side, amount, usd, ts: tsRaw };
-}
 
 /* ---------- Component ---------- */
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SpinResp | null>(null);
   const [spins, setSpins] = useState<number>(0);
+  const [history, setHistory] = useState<string[]>([]); // Track spun coins
+  const [streak, setStreak] = useState<number>(0); // Consecutive unique coins
 
   const [verbose, setVerbose] = useState<boolean>(true);
   const [log, setLog] = useState<LogLine[]>([
@@ -232,13 +162,24 @@ export default function Home() {
       setSpins((s) => s + 1);
 
       const c = j.coin!;
+
+      // Check if coin was already spun
+      const isDuplicate = history.includes(c.address || '');
+      if (c.address) {
+        setHistory(prev => [...prev.slice(-19), c.address!]); // Keep last 20
+      }
+
       const createdDate =
         c.createdAt != null
           ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
           : null;
 
+      // Fun sentiment emoji
+      const sentimentEmoji = j.stats?.sentiment === 'bullish' ? '🚀' :
+        j.stats?.sentiment === 'bearish' ? '📉' : '😐';
+
       pushLog({
-        t: `✔ ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}`,
+        t: `✔ ${sentimentEmoji} ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}${isDuplicate ? ' 🔁' : ''}`,
         type: "ok",
       });
 
@@ -253,16 +194,33 @@ export default function Home() {
           });
         }
 
-        const d = j.details;
-        if (d && d.swaps) {
-          const raw = Array.isArray(d.swaps) ? (d.swaps as unknown[]) : [];
-          const first10 = raw.slice(0, 10).map((x) => coerceSwap(x as UnknownSwap));
-          const buys = first10.filter((s) => (s.side ?? "BUY") === "BUY").length;
-          const sells = first10.length - buys;
-          pushLog({ t: `↳ swaps(top10): ${first10.length} (↑ BUY ${buys} / ↓ SELL ${sells})`, type: "info" });
-          // Ayrıntıları UI'da da kullanacağız
-          setData((prev) => (prev ? { ...prev, details: { ...prev.details, swaps: first10 } } : prev));
+        // Stats from API
+        if (j.stats) {
+          const { buyCount, sellCount, sentiment, totalActivity } = j.stats;
+          pushLog({
+            t: `↳ sentiment: ${sentiment} ${sentimentEmoji} • activity: ${totalActivity} • buys: ${buyCount} / sells: ${sellCount}`,
+            type: "info"
+          });
         }
+
+        const d = j.details;
+        if (d?.swaps && Array.isArray(d.swaps)) {
+          const swaps = d.swaps as SwapUI[];
+          pushLog({ t: `↳ recent swaps: ${swaps.length}`, type: "info" });
+        }
+
+        if (isDuplicate) {
+          pushLog({ t: `↳ 🔁 You've seen this coin before!`, type: "warn" });
+        }
+      }
+
+      // Fun toast messages
+      if (isDuplicate) {
+        setToast("🔁 Déjà vu! Seen this one before");
+        setTimeout(() => setToast(null), 2000);
+      } else if (j.stats?.sentiment === 'bullish' && j.stats.buyCount >= 7) {
+        setToast("🚀 Bulls are running!");
+        setTimeout(() => setToast(null), 2000);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -299,23 +257,29 @@ export default function Home() {
       ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
       : null;
 
-  // Swaps & holders data prepared for UI
+  // Swaps data from API (already processed)
   const swapsTop10: SwapUI[] = Array.isArray(data?.details?.swaps)
-    ? (data!.details!.swaps as unknown[]).slice(0, 10).map((x) => coerceSwap(x as UnknownSwap))
+    ? (data.details.swaps as SwapUI[]).slice(0, 10)
     : [];
 
-  const holdersTop10: HolderRow[] = holdersArray(data?.details?.holders).slice(0, 10);
+  // Get all holders
+  const allHolders: HolderRow[] = holdersArray(data?.details?.holders);
 
-  // holders percentages (normalize to total of top10)
-  const holdersTotal = holdersTop10.reduce((acc, h) => {
-    const n = toNumber(h.balance);
-    return acc + (n ?? 0);
-  }, 0);
-  const holdersPercentages = holdersTop10.map((h) => {
-    const n = toNumber(h.balance) ?? 0;
-    const p = holdersTotal > 0 ? (n / holdersTotal) * 100 : 0;
-    return Math.max(0, Math.min(100, p));
-  });
+  // Filter out the unwanted address and shift rankings
+  const excludedAddress = "0x498581ff718922c3f8e6a244956af099b2652b2b".toLowerCase();
+  const filteredHolders = allHolders
+    .filter(h => h.holder?.toLowerCase() !== excludedAddress)
+    .map((h, index) => ({ ...h, rank: index + 1 })); // Shift ranks starting from 1 for the second holder
+  const holdersTop10: HolderRow[] = filteredHolders.slice(0, 10);
+
+  // Calculate balances
+  const balances = holdersTop10.map(h => toNumber(h.balance) ?? 0);
+
+  // Find max balance
+  const maxBalance = Math.max(0, ...balances);
+
+  // Calculate relative percentages to the max balance
+  const holdersPercentages = balances.map(n => maxBalance > 0 ? (n / maxBalance) * 100 : 0);
 
   return (
     <main className="screen">
@@ -383,6 +347,13 @@ export default function Home() {
             <div>
               <div className="coin-name">
                 {c.name} {c.symbol ? <span className="symbol">({c.symbol})</span> : null}
+                {data?.stats && (
+                  <span className={`sentiment-badge ${data.stats.sentiment}`}>
+                    {data.stats.sentiment === 'bullish' ? '🚀 Bullish' :
+                      data.stats.sentiment === 'bearish' ? '📉 Bearish' :
+                        '😐 Neutral'}
+                  </span>
+                )}
               </div>
               <div className="address">{c.address ? `0x${c.address.replace(/^0x/, "")}` : ""}</div>
             </div>
@@ -431,6 +402,14 @@ export default function Home() {
               {timeAgo(createdDate.getTime())}
             </div>
           )}
+
+          {data?.stats && (
+            <div className="activity-stats">
+              <span>📊 Activity: {data.stats.totalActivity}</span>
+              <span>↑ Buys: {data.stats.buyCount}</span>
+              <span>↓ Sells: {data.stats.sellCount}</span>
+            </div>
+          )}
         </section>
       )}
 
@@ -443,12 +422,11 @@ export default function Home() {
               <div className="cell idx">#</div>
               <div className="cell side">SIDE</div>
               <div className="cell amt">AMOUNT</div>
-              <div className="cell usd">~USD</div>
+              <div className="cell addr">ADDRESS</div>
               <div className="cell date">DATE</div>
               <div className="cell time">TIME</div>
             </div>
             {swapsTop10.map((s, i) => {
-              const parts = tsToDateParts(s.ts ?? "");
               const side = (s.side ?? "BUY") === "BUY" ? "BUY" : "SELL";
               const sideClass = side === "BUY" ? "buy" : "sell";
               return (
@@ -458,9 +436,9 @@ export default function Home() {
                     {side === "BUY" ? "▲ BUY" : "▼ SELL"}
                   </div>
                   <div className="cell amt">{compact(s.amount)}</div>
-                  <div className="cell usd">{formatUSD(s.usd)}</div>
-                  <div className="cell date">{parts.date}</div>
-                  <div className="cell time">{parts.time}</div>
+                  <div className="cell addr">{s.address || "—"}</div>
+                  <div className="cell date">{s.date || "—"}</div>
+                  <div className="cell time">{s.time || "—"}</div>
                 </div>
               );
             })}
@@ -468,29 +446,48 @@ export default function Home() {
         </section>
       )}
 
-      {/* Holders Top 10 – CSS Bar Chart */}
+      {/* Holders Top 10 – Visual Bar Chart */}
       {holdersTop10.length > 0 && (
         <section className="panel">
-          <div className="panel-head">Top Holders — Share within Top 10</div>
-          <div className="bars">
+          <div className="panel-head">
+            👑 Top 10 Holders
+          </div>
+          <div className="holders-grid">
             {holdersTop10.map((h, i) => {
-              const label = shortAddr(h.ens ?? h.owner);
+              const label = shortAddr(h.ens ?? h.holder ?? h.owner);
               const p = holdersPercentages[i] ?? 0;
+              const bal = compact(toNumber(h.balance));
+              const isTop = i === 0; // Only the first after shift is top
+
+              // Calculate visual bar width (percentage blocks)
+              const maxBlocks = 40;
+              const blocks = Math.round((p / 100) * maxBlocks);
+              const fullBlocks = '█'.repeat(blocks);
+              const emptyBlocks = '░'.repeat(maxBlocks - blocks);
+
               return (
-                <div className="bar-row" key={`h-${i}`}>
-                  <div className="bar-label">{i + 1}. {label}</div>
-                  <div className="bar-track" aria-label={`${label} ${p.toFixed(2)}%`}>
-                    <div className="bar-fill" style={{ width: `${p}%` }} />
-                    <div className="bar-cap">{p.toFixed(2)}%</div>
+                <div className={`holder-item ${isTop ? 'top-holder' : ''}`} key={`h-${i}`}>
+                  <div className="holder-header">
+                    <div className="holder-name">
+                      <span className="rank-num">{h.rank ?? (i + 1)}</span>
+                      {isTop && <span className="crown-icon">👑</span>}
+                      <span className="holder-addr">{label}</span>
+                    </div>
+                    <div className="holder-value">
+                      <span className="balance-val">{bal}</span>
+                      <span className="percent-val">{p.toFixed(1)}%</span>
+                    </div>
+                  </div>
+                  <div className="visual-bar">
+                    <span className="bar-blocks filled">{fullBlocks}</span>
+                    <span className="bar-blocks empty">{emptyBlocks}</span>
                   </div>
                 </div>
               );
             })}
           </div>
           <div className="panel-foot">
-            {holdersTotal > 0
-              ? "Percentages are relative to the total of Top 10 balances."
-              : "Balances unavailable — percentages may be zero."}
+            💡 Distribution based on top 10 holders only
           </div>
         </section>
       )}
@@ -693,10 +690,58 @@ export default function Home() {
         .card-row {
           display: flex; align-items: center; justify-content: space-between; gap: 12px;
         }
-        .coin-name { font-size: 18px; font-weight: 800; letter-spacing: .2px; }
+        .coin-name { 
+          font-size: 18px; 
+          font-weight: 800; 
+          letter-spacing: .2px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
         .symbol { color: #a9c7ff; font-weight: 700; }
+        .sentiment-badge {
+          font-size: 11px;
+          font-weight: 700;
+          padding: 4px 8px;
+          border-radius: 6px;
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+        }
+        .sentiment-badge.bullish {
+          background: rgba(34,197,94,0.15);
+          color: #86efac;
+          border: 1px solid rgba(34,197,94,0.3);
+        }
+        .sentiment-badge.bearish {
+          background: rgba(239,68,68,0.15);
+          color: #fca5a5;
+          border: 1px solid rgba(239,68,68,0.3);
+        }
+        .sentiment-badge.neutral {
+          background: rgba(148,163,184,0.15);
+          color: #cbd5e1;
+          border: 1px solid rgba(148,163,184,0.3);
+        }
         .address { margin-top: 4px; font-size: 12px; color: var(--dim); word-break: break-all; }
         .link { font-size: 12px; color: #89e6ff; text-decoration: underline; }
+
+        .activity-stats {
+          margin-top: 12px;
+          padding-top: 12px;
+          border-top: 1px solid rgba(255,255,255,0.08);
+          display: flex;
+          gap: 16px;
+          font-size: 12px;
+          color: var(--dim);
+          flex-wrap: wrap;
+        }
+        .activity-stats span {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
 
         .grid {
           margin-top: 14px;
@@ -757,7 +802,7 @@ export default function Home() {
         .table { width: 100%; }
         .row {
           display: grid;
-          grid-template-columns: 44px 100px 1fr 1fr 120px 80px;
+          grid-template-columns: 44px 100px 1fr 140px 120px 80px;
           gap: 8px;
           padding: 8px 12px;
           align-items: center;
@@ -781,39 +826,125 @@ export default function Home() {
         }
         .buy { background: var(--buy); }
         .sell { background: var(--sell); color: #240000; }
-        .amt, .usd { font-weight: 700; }
+        .amt, .addr { font-weight: 700; }
+        .addr { font-size: 11px; font-family: ui-monospace, monospace; }
 
         @media (max-width: 760px) {
-          .row { grid-template-columns: 32px 84px 1fr 1fr 100px 70px; }
+          .row { grid-template-columns: 32px 84px 1fr 110px 100px 70px; }
         }
         @media (max-width: 520px) {
-          .row { grid-template-columns: 28px 84px 1fr 1fr; }
+          .row { grid-template-columns: 28px 84px 1fr 100px; }
           .cell.date, .cell.time { display: none; }
         }
 
-        /* Holders Bars */
-        .bars { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 10px; }
-        .bar-row { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; }
-        .bar-label { font-size: 12px; color: #cfe7ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .bar-track {
-          position: relative;
-          height: 20px;
-          border-radius: 9999px;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.10);
-          overflow: hidden;
+        /* Holders Grid - ASCII Bar Style */
+        .holders-grid { 
+          padding: 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
         }
-        .bar-fill {
-          position: absolute; left: 0; top: 0; bottom: 0;
-          background: linear-gradient(90deg, #22d3ee, #a855f7);
-          box-shadow: 0 0 18px rgba(34,211,238,0.35) inset;
+        .holder-item {
+          background: rgba(15,23,42,0.4);
+          border: 1px solid rgba(148,163,184,0.15);
+          border-radius: 10px;
+          padding: 12px 14px;
+          transition: all 0.2s ease;
         }
-        .bar-cap {
-          position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-          font-size: 12px; color: #e6f0ff; text-shadow: 0 1px 0 rgba(0,0,0,0.35);
+        .holder-item:hover {
+          background: rgba(15,23,42,0.6);
+          border-color: rgba(6,182,212,0.3);
+          transform: translateX(2px);
+        }
+        .holder-item.top-holder {
+          background: rgba(250,204,21,0.08);
+          border-left: 3px solid #fbbf24;
+          border-color: rgba(251,191,36,0.3);
+        }
+        .holder-item.top-holder:hover {
+          background: rgba(250,204,21,0.12);
+          border-color: rgba(251,191,36,0.5);
+        }
+        .holder-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 8px;
+        }
+        .holder-name {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 13px;
+          font-weight: 600;
+        }
+        .rank-num {
+          color: #64748b;
+          font-weight: 700;
+          min-width: 22px;
+        }
+        .holder-item.top-holder .rank-num {
+          color: #fbbf24;
+        }
+        .crown-icon {
+          font-size: 16px;
+          filter: drop-shadow(0 0 4px rgba(251,191,36,0.6));
+        }
+        .holder-addr {
+          color: #cbd5e1;
+          font-family: ui-monospace, monospace;
+        }
+        .holder-item.top-holder .holder-addr {
+          color: #fef3c7;
+        }
+        .holder-value {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .balance-val {
+          color: #94a3b8;
+          font-size: 12px;
+          font-weight: 600;
+        }
+        .percent-val {
+          color: #22d3ee;
+          font-size: 14px;
+          font-weight: 800;
+        }
+        .holder-item.top-holder .percent-val {
+          color: #fbbf24;
+        }
+        .visual-bar {
+          font-family: ui-monospace, 'Courier New', monospace;
+          font-size: 10px;
+          line-height: 1.2;
+          letter-spacing: -0.5px;
+          overflow-x: auto;
+          white-space: nowrap;
+          padding: 4px 0;
+        }
+        .bar-blocks {
+          display: inline;
+        }
+        .bar-blocks.filled {
+          color: #22d3ee;
+          text-shadow: 0 0 8px rgba(34,211,238,0.5);
+        }
+        .holder-item.top-holder .bar-blocks.filled {
+          color: #fbbf24;
+          text-shadow: 0 0 8px rgba(251,191,36,0.6);
+        }
+        .bar-blocks.empty {
+          color: #1e293b;
         }
         @media (max-width: 640px) {
-          .bar-row { grid-template-columns: 1fr; }
+          .holder-value {
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 2px;
+          }
+          .balance-val { font-size: 11px; }
         }
 
         /* Terminal */
