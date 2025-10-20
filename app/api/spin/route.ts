@@ -389,11 +389,8 @@ function processComments(resp: ApiResponse | null): ProcessedComment[] {
     .filter((item): item is ProcessedComment => item !== null);
 }
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    // Get search params for session tracking
-    const { searchParams } = new URL(request.url);
-    const sessionId = searchParams.get('session') || Date.now().toString();
 
     // Fetch larger pool for more variety
     const res = await getCoinsTopVolume24h({ count: 200 });

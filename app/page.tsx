@@ -108,11 +108,11 @@ function holdersArray(h: HoldersPayload): HolderRow[] {
   if (!h) return [];
   return Array.isArray(h) ? h : (h.top10 ?? []);
 }
-function toNumber(v?: number | string): number | null {
-  if (v == null) return null;
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+function toNumber(v?: number | string): number | undefined {
+  if (v == null) return undefined;
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
   const n = Number(String(v).replaceAll(",", ""));
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : undefined;
 }
 
 /* ---------- Component ---------- */
