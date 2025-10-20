@@ -121,7 +121,6 @@ export default function Home() {
   const [data, setData] = useState<SpinResp | null>(null);
   const [spins, setSpins] = useState<number>(0);
   const [history, setHistory] = useState<string[]>([]); // Track spun coins
-  const [streak, setStreak] = useState<number>(0); // Consecutive unique coins
 
   const [verbose, setVerbose] = useState<boolean>(true);
   const [log, setLog] = useState<LogLine[]>([
@@ -262,24 +261,24 @@ export default function Home() {
     ? (data.details.swaps as SwapUI[]).slice(0, 10)
     : [];
 
-  // Get all holders
-  const allHolders: HolderRow[] = holdersArray(data?.details?.holders);
+  const holdersTop10: HolderRow[] = holdersArray(data?.details?.holders).slice(0, 10);
 
-  // Filter out the unwanted address and shift rankings
-  const excludedAddress = "0x498581ff718922c3f8e6a244956af099b2652b2b".toLowerCase();
-  const filteredHolders = allHolders
-    .filter(h => h.holder?.toLowerCase() !== excludedAddress)
-    .map((h, index) => ({ ...h, rank: index + 1 })); // Shift ranks starting from 1 for the second holder
-  const holdersTop10: HolderRow[] = filteredHolders.slice(0, 10);
+  // If API already provided percentages, use them
+  const hasApiPercentages = holdersTop10.length > 0 && holdersTop10[0]?.percentage != null;
 
-  // Calculate balances
-  const balances = holdersTop10.map(h => toNumber(h.balance) ?? 0);
+  // Calculate percentages if not provided by API
+  const holdersTotal = hasApiPercentages ? 0 : holdersTop10.reduce((acc, h) => {
+    const n = toNumber(h.balance);
+    return acc + (n ?? 0);
+  }, 0);
 
-  // Find max balance
-  const maxBalance = Math.max(0, ...balances);
-
-  // Calculate relative percentages to the max balance
-  const holdersPercentages = balances.map(n => maxBalance > 0 ? (n / maxBalance) * 100 : 0);
+  const holdersPercentages = hasApiPercentages
+    ? holdersTop10.map(h => h.percentage ?? 0)
+    : holdersTop10.map((h) => {
+      const n = toNumber(h.balance) ?? 0;
+      const p = holdersTotal > 0 ? (n / holdersTotal) * 100 : 0;
+      return Math.max(0, Math.min(100, p));
+    });
 
   return (
     <main className="screen">
@@ -446,41 +445,35 @@ export default function Home() {
         </section>
       )}
 
-      {/* Holders Top 10 – Visual Bar Chart */}
+      {/* Holders Top 10 – Simplified Visualization */}
       {holdersTop10.length > 0 && (
         <section className="panel">
           <div className="panel-head">
             👑 Top 10 Holders
           </div>
-          <div className="holders-grid">
+          <div className="bars">
             {holdersTop10.map((h, i) => {
               const label = shortAddr(h.ens ?? h.holder ?? h.owner);
               const p = holdersPercentages[i] ?? 0;
               const bal = compact(toNumber(h.balance));
-              const isTop = i === 0; // Only the first after shift is top
-
-              // Calculate visual bar width (percentage blocks)
-              const maxBlocks = 40;
-              const blocks = Math.round((p / 100) * maxBlocks);
-              const fullBlocks = '█'.repeat(blocks);
-              const emptyBlocks = '░'.repeat(maxBlocks - blocks);
-
+              const isTop = h.isTopHolder || i === 0;
               return (
-                <div className={`holder-item ${isTop ? 'top-holder' : ''}`} key={`h-${i}`}>
-                  <div className="holder-header">
-                    <div className="holder-name">
-                      <span className="rank-num">{h.rank ?? (i + 1)}</span>
-                      {isTop && <span className="crown-icon">👑</span>}
-                      <span className="holder-addr">{label}</span>
-                    </div>
-                    <div className="holder-value">
-                      <span className="balance-val">{bal}</span>
-                      <span className="percent-val">{p.toFixed(1)}%</span>
-                    </div>
+                <div className={`bar-row ${isTop ? 'top-holder' : ''}`} key={`h-${i}`}>
+                  <div className="bar-label">
+                    <span className="rank">{h.rank ?? (i + 1)}.</span>
+                    {isTop && <span className="crown">👑</span>}
+                    <span className="addr">{label}</span>
                   </div>
-                  <div className="visual-bar">
-                    <span className="bar-blocks filled">{fullBlocks}</span>
-                    <span className="bar-blocks empty">{emptyBlocks}</span>
+                  <div className="bar-track" aria-label={`${label} ${p.toFixed(1)}%`}>
+                    <div
+                      className="bar-fill"
+                      style={{ width: `${p}%` }}
+                      data-percentage={p.toFixed(1)}
+                    />
+                    <div className="bar-stats">
+                      <span className="bar-balance">{bal}</span>
+                      <span className="bar-percentage">{p.toFixed(1)}%</span>
+                    </div>
                   </div>
                 </div>
               );
@@ -837,114 +830,112 @@ export default function Home() {
           .cell.date, .cell.time { display: none; }
         }
 
-        /* Holders Grid - ASCII Bar Style */
-        .holders-grid { 
-          padding: 16px;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-        .holder-item {
-          background: rgba(15,23,42,0.4);
-          border: 1px solid rgba(148,163,184,0.15);
-          border-radius: 10px;
-          padding: 12px 14px;
+        /* Holders Bars - Simplified & Clear Colors */
+        .bars { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+        .bar-row { 
+          display: grid; 
+          grid-template-columns: 180px 1fr; 
+          gap: 12px; 
+          align-items: center;
+          padding: 6px;
+          border-radius: 8px;
           transition: all 0.2s ease;
         }
-        .holder-item:hover {
-          background: rgba(15,23,42,0.6);
-          border-color: rgba(6,182,212,0.3);
+        .bar-row:hover { 
+          background: rgba(34,211,238,0.08);
           transform: translateX(2px);
         }
-        .holder-item.top-holder {
-          background: rgba(250,204,21,0.08);
+        .bar-row.top-holder {
+          background: rgba(250,204,21,0.1);
           border-left: 3px solid #fbbf24;
-          border-color: rgba(251,191,36,0.3);
+          padding-left: 9px;
         }
-        .holder-item.top-holder:hover {
-          background: rgba(250,204,21,0.12);
-          border-color: rgba(251,191,36,0.5);
+        .bar-row.top-holder:hover {
+          background: rgba(250,204,21,0.15);
         }
-        .holder-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 8px;
-        }
-        .holder-name {
+        .bar-label { 
           display: flex;
           align-items: center;
-          gap: 8px;
-          font-size: 13px;
+          gap: 6px;
+          font-size: 13px; 
           font-weight: 600;
+          overflow: hidden;
         }
-        .rank-num {
-          color: #64748b;
+        .rank { 
+          color: #64748b; 
+          min-width: 18px;
           font-weight: 700;
-          min-width: 22px;
         }
-        .holder-item.top-holder .rank-num {
-          color: #fbbf24;
-        }
-        .crown-icon {
-          font-size: 16px;
-          filter: drop-shadow(0 0 4px rgba(251,191,36,0.6));
-        }
-        .holder-addr {
+        .bar-row.top-holder .rank { color: #fbbf24; }
+        .crown { font-size: 16px; filter: drop-shadow(0 0 4px rgba(251,191,36,0.6)); }
+        .addr { 
           color: #cbd5e1;
-          font-family: ui-monospace, monospace;
+          overflow: hidden; 
+          text-overflow: ellipsis; 
+          white-space: nowrap; 
         }
-        .holder-item.top-holder .holder-addr {
-          color: #fef3c7;
+        .bar-row.top-holder .addr { color: #fef3c7; }
+        .bar-track {
+          position: relative;
+          height: 36px;
+          border-radius: 8px;
+          background: rgba(15,23,42,0.6);
+          border: 1px solid rgba(148,163,184,0.2);
+          overflow: visible;
         }
-        .holder-value {
+        .bar-fill {
+          position: absolute; 
+          left: 0; 
+          top: 0; 
+          bottom: 0;
+          background: linear-gradient(90deg, #06b6d4 0%, #0891b2 100%);
+          border-radius: 7px;
+          box-shadow: 
+            0 0 20px rgba(6,182,212,0.3) inset,
+            0 2px 8px rgba(6,182,212,0.4);
+          transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .bar-row.top-holder .bar-fill {
+          background: linear-gradient(90deg, #fbbf24 0%, #f59e0b 100%);
+          box-shadow: 
+            0 0 20px rgba(251,191,36,0.4) inset,
+            0 2px 8px rgba(251,191,36,0.5);
+        }
+        .bar-stats {
+          position: absolute; 
+          right: 10px; 
+          top: 50%; 
+          transform: translateY(-50%);
           display: flex;
           align-items: center;
           gap: 10px;
-        }
-        .balance-val {
-          color: #94a3b8;
           font-size: 12px;
+          z-index: 2;
+        }
+        .bar-balance {
+          color: #94a3b8;
           font-weight: 600;
+          background: rgba(15,23,42,0.8);
+          padding: 2px 6px;
+          border-radius: 4px;
         }
-        .percent-val {
-          color: #22d3ee;
-          font-size: 14px;
+        .bar-percentage {
+          color: #f0f9ff; 
           font-weight: 800;
+          font-size: 14px;
+          text-shadow: 
+            0 1px 3px rgba(0,0,0,0.8),
+            0 0 10px rgba(6,182,212,0.5);
         }
-        .holder-item.top-holder .percent-val {
-          color: #fbbf24;
-        }
-        .visual-bar {
-          font-family: ui-monospace, 'Courier New', monospace;
-          font-size: 10px;
-          line-height: 1.2;
-          letter-spacing: -0.5px;
-          overflow-x: auto;
-          white-space: nowrap;
-          padding: 4px 0;
-        }
-        .bar-blocks {
-          display: inline;
-        }
-        .bar-blocks.filled {
-          color: #22d3ee;
-          text-shadow: 0 0 8px rgba(34,211,238,0.5);
-        }
-        .holder-item.top-holder .bar-blocks.filled {
-          color: #fbbf24;
-          text-shadow: 0 0 8px rgba(251,191,36,0.6);
-        }
-        .bar-blocks.empty {
-          color: #1e293b;
+        .bar-row.top-holder .bar-percentage {
+          text-shadow: 
+            0 1px 3px rgba(0,0,0,0.8),
+            0 0 10px rgba(251,191,36,0.6);
         }
         @media (max-width: 640px) {
-          .holder-value {
-            flex-direction: column;
-            align-items: flex-end;
-            gap: 2px;
-          }
-          .balance-val { font-size: 11px; }
+          .bar-row { grid-template-columns: 140px 1fr; }
+          .bar-balance { display: none; }
+          .bar-stats { right: 6px; }
         }
 
         /* Terminal */

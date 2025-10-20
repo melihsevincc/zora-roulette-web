@@ -18,22 +18,6 @@ import type {
 setApiKey(process.env.ZORA_API_KEY || "");
 export const dynamic = "force-dynamic";
 
-// In-memory cache to track recently shown coins
-const recentCoins = new Set<string>();
-const MAX_RECENT = 50; // Track last 50 coins
-
-function addToRecent(address: string) {
-  recentCoins.add(address.toLowerCase());
-  if (recentCoins.size > MAX_RECENT) {
-    const first = recentCoins.values().next().value;
-    recentCoins.delete(first);
-  }
-}
-
-function isRecent(address: string): boolean {
-  return recentCoins.has(address.toLowerCase());
-}
-
 // Type definitions
 interface SwapNode {
   activityType?: string;
