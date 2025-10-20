@@ -15,7 +15,9 @@ import type {
   ExploreEdgeRaw,
 } from "@/lib/types";
 
-setApiKey(process.env.ZORA_API_KEY || "");
+if (process.env.ZORA_API_KEY) {
+  setApiKey(process.env.ZORA_API_KEY);
+}
 export const dynamic = "force-dynamic";
 
 // Type definitions
