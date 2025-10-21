@@ -58,6 +58,9 @@ type SpinResp = {
     sellCount: number;
     sentiment: 'bullish' | 'bearish' | 'neutral';
     timestamp: number;
+    poolSize?: number;
+    freshCoins?: number;
+    cacheSize?: number;
   };
   error?: string;
 };
@@ -120,7 +123,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SpinResp | null>(null);
   const [spins, setSpins] = useState<number>(0);
-  const [history, setHistory] = useState<string[]>([]); // Track spun coins
+  const [history, setHistory] = useState<string[]>([]);
+  const [uniqueStreak, setUniqueStreak] = useState<number>(0);
+  const [bestStreak, setBestStreak] = useState<number>(0); // Track spun coins
 
   const [verbose, setVerbose] = useState<boolean>(true);
   const [log, setLog] = useState<LogLine[]>([
@@ -166,6 +171,17 @@ export default function Home() {
       const isDuplicate = history.includes(c.address || '');
       if (c.address) {
         setHistory(prev => [...prev.slice(-19), c.address!]); // Keep last 20
+        if (isDuplicate) {
+          setUniqueStreak(0);
+        } else {
+          setUniqueStreak(prev => {
+            const newStreak = prev + 1;
+            if (newStreak > bestStreak) {
+              setBestStreak(newStreak);
+            }
+            return newStreak;
+          });
+        }
       }
 
       const createdDate =
@@ -177,8 +193,14 @@ export default function Home() {
       const sentimentEmoji = j.stats?.sentiment === 'bullish' ? '🚀' :
         j.stats?.sentiment === 'bearish' ? '📉' : '😐';
 
+      // Rarity detection
+      const holders = toNumber(c.uniqueHolders) ?? 0;
+      const isRare = holders > 0 && holders < 50;
+      const isPopular = holders >= 1000;
+      const rarityBadge = isRare ? '💎' : isPopular ? '🔥' : '';
+
       pushLog({
-        t: `✔ ${sentimentEmoji} ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}${isDuplicate ? ' 🔁' : ''}`,
+        t: `✔ ${sentimentEmoji} ${rarityBadge} ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}${isDuplicate ? ' 🔁' : ''}`,
         type: "ok",
       });
 
@@ -211,15 +233,44 @@ export default function Home() {
         if (isDuplicate) {
           pushLog({ t: `↳ 🔁 You've seen this coin before!`, type: "warn" });
         }
+
+        // Stats from server
+        if (j.stats?.poolSize) {
+          pushLog({
+            t: `↳ pool: ${j.stats.poolSize} • fresh: ${j.stats.freshCoins} • cache: ${j.stats.cacheSize}`,
+            type: "info"
+          });
+        }
+
+        // Rarity info
+        if (isRare) {
+          pushLog({ t: `↳ 💎 RARE GEM! Only ${holders} holders`, type: "ok" });
+        } else if (isPopular) {
+          pushLog({ t: `↳ 🔥 POPULAR! ${compact(holders)} holders`, type: "ok" });
+        }
+
+        // Streak info
+        if (uniqueStreak >= 5) {
+          pushLog({ t: `↳ 🔥 ${uniqueStreak} UNIQUE STREAK!`, type: "ok" });
+        }
       }
 
       // Fun toast messages
       if (isDuplicate) {
         setToast("🔁 Déjà vu! Seen this one before");
-        setTimeout(() => setToast(null), 2000);
+        setTimeout(() => setToast(null), 2500);
+      } else if (isRare) {
+        setToast(`💎 Rare gem found! Only ${holders} holders`);
+        setTimeout(() => setToast(null), 3000);
+      } else if (uniqueStreak > 0 && uniqueStreak % 5 === 0) {
+        setToast(`🔥 ${uniqueStreak} UNIQUE STREAK!`);
+        setTimeout(() => setToast(null), 3000);
       } else if (j.stats?.sentiment === 'bullish' && j.stats.buyCount >= 7) {
         setToast("🚀 Bulls are running!");
-        setTimeout(() => setToast(null), 2000);
+        setTimeout(() => setToast(null), 2500);
+      } else if (isPopular) {
+        setToast(`🔥 Popular coin! ${compact(holders)} holders`);
+        setTimeout(() => setToast(null), 2500);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -237,17 +288,38 @@ export default function Home() {
       setTimeout(() => setToast(null), 1200);
       return;
     }
-    const url = `https://zora.co/coin/${c.address}`;
+
+    const holders = toNumber(c.uniqueHolders) ?? 0;
+    const isRare = holders > 0 && holders < 50;
+    const isPopular = holders >= 1000;
+    const rarityText = isRare ? '💎 Rare Gem!' : isPopular ? '🔥 Popular!' : '';
+
+    const sentimentEmoji = data?.stats?.sentiment === 'bullish' ? '🚀' :
+      data?.stats?.sentiment === 'bearish' ? '📉' : '😐';
+
+    const shareText = `🎰 Zora Roulette Spin #${spins}
+
+${sentimentEmoji} ${c.name} ${c.symbol ? `($${c.symbol})` : ''}
+${rarityText}
+
+💰 Market Cap: ${compact(c.marketCap)}
+📊 24h Volume: ${compact(c.volume24h)}
+👥 Holders: ${compact(c.uniqueHolders)}
+${uniqueStreak > 0 ? `🔥 Streak: ${uniqueStreak}\n` : ''}
+🔗 https://zora.co/coin/${c.address}
+
+Try it yourself: Zora Roulette`;
+
     try {
-      await navigator.clipboard.writeText(url);
-      setToast("Link copied!");
-      pushLog({ t: `🔗 Copied: ${url}`, type: "info" });
+      await navigator.clipboard.writeText(shareText);
+      setToast("📋 Share text copied!");
+      pushLog({ t: `📋 Copied share text`, type: "info" });
     } catch {
-      window.alert(url);
-      setToast("Link ready!");
-      pushLog({ t: `🔗 Link: ${url}`, type: "info" });
+      window.alert(shareText);
+      setToast("Share text ready!");
+      pushLog({ t: `📋 Share text ready`, type: "info" });
     }
-    setTimeout(() => setToast(null), 1500);
+    setTimeout(() => setToast(null), 2000);
   }
 
   const c = data?.coin ?? null;
@@ -299,11 +371,32 @@ export default function Home() {
               <div className="mode">Mode</div>
               <div className="mode-value">Volume</div>
               <div className="spins">spins: {spins}</div>
+              {uniqueStreak >= 5 && (
+                <div className="streak">🔥 {uniqueStreak}</div>
+              )}
             </div>
           </div>
           <div className="pointer" />
         </div>
       </section>
+
+      {/* Stats Bar */}
+      {(uniqueStreak > 0 || bestStreak > 0 || spins > 0) && (
+        <section className="stats-bar">
+          <div className="stat-item">
+            <span className="stat-label">Total Spins</span>
+            <span className="stat-value">{spins}</span>
+          </div>
+          <div className="stat-item highlight">
+            <span className="stat-label">Current Streak</span>
+            <span className="stat-value">{uniqueStreak} {uniqueStreak >= 5 ? '🔥' : ''}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">Best Streak</span>
+            <span className="stat-value">{bestStreak} {bestStreak >= 10 ? '🏆' : ''}</span>
+          </div>
+        </section>
+      )}
 
       {/* Actions */}
       <section className="toolbar">
@@ -331,6 +424,19 @@ export default function Home() {
           >
             Clear log
           </button>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              setUniqueStreak(0);
+              setBestStreak(0);
+              setSpins(0);
+              setHistory([]);
+              setData(null);
+              setLog([{ t: "🔄 Stats reset. Ready for a new session!", type: "info" }]);
+            }}
+          >
+            Reset Stats
+          </button>
         </div>
       </section>
 
@@ -353,6 +459,16 @@ export default function Home() {
                         '😐 Neutral'}
                   </span>
                 )}
+                {(() => {
+                  const holders = toNumber(c.uniqueHolders) ?? 0;
+                  if (holders > 0 && holders < 50) {
+                    return <span className="rarity-badge rare">💎 Rare</span>;
+                  }
+                  if (holders >= 1000) {
+                    return <span className="rarity-badge popular">🔥 Popular</span>;
+                  }
+                  return null;
+                })()}
               </div>
               <div className="address">{c.address ? `0x${c.address.replace(/^0x/, "")}` : ""}</div>
             </div>
@@ -407,6 +523,12 @@ export default function Home() {
               <span>📊 Activity: {data.stats.totalActivity}</span>
               <span>↑ Buys: {data.stats.buyCount}</span>
               <span>↓ Sells: {data.stats.sellCount}</span>
+              {data.stats.poolSize && (
+                <>
+                  <span>🎰 Pool: {data.stats.poolSize}</span>
+                  <span>✨ Fresh: {data.stats.freshCoins}</span>
+                </>
+              )}
             </div>
           )}
         </section>
@@ -498,7 +620,16 @@ export default function Home() {
       {/* Toast */}
       {toast && <div className="toast">{toast}</div>}
 
-      <footer className="foot">Casino vibes only — have fun.</footer>
+      <footer className="foot">
+        <div>Casino vibes only — have fun. Made for <a href="https://zora.co" target="_blank" rel="noreferrer" className="zora-link">zora.co</a></div>
+        {uniqueStreak > 0 && (
+          <div className="footer-stats">
+            🎯 Current Streak: {uniqueStreak} unique {uniqueStreak === 1 ? 'coin' : 'coins'}
+            {uniqueStreak >= 10 && ' 🏆'}
+            {uniqueStreak >= 20 && ' 🔥🔥🔥'}
+          </div>
+        )}
+      </footer>
 
       {/* --- styles: styled-jsx global (reset/theme) --- */}
       <style jsx global>{`
@@ -591,6 +722,18 @@ export default function Home() {
         .mode { font-size: 12px; color: var(--dim); }
         .mode-value { margin-top: 4px; font-weight: 800; filter: drop-shadow(0 0 18px rgba(34,211,238,0.35)); }
         .spins { margin-top: 8px; font-size: 12px; color: var(--dim); }
+        .streak {
+          margin-top: 6px;
+          font-size: 16px;
+          font-weight: 900;
+          color: #fbbf24;
+          filter: drop-shadow(0 0 12px rgba(251,191,36,0.6));
+          animation: pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes pulse {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.1); opacity: 0.9; }
+        }
 
         .pointer {
           position: absolute;
@@ -601,6 +744,58 @@ export default function Home() {
           border-right: 10px solid transparent;
           border-bottom: 14px solid #22d3ee;
           filter: drop-shadow(0 0 8px rgba(34,211,238,0.7));
+        }
+
+        .stats-bar {
+          margin-top: 20px;
+          display: flex;
+          gap: 12px;
+          padding: 12px 16px;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 12px;
+          backdrop-filter: blur(8px);
+        }
+        .stat-item {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          align-items: center;
+          padding: 6px 12px;
+          border-radius: 8px;
+          background: rgba(0,0,0,0.2);
+          min-width: 90px;
+        }
+        .stat-item.highlight {
+          background: rgba(251,191,36,0.15);
+          border: 1px solid rgba(251,191,36,0.3);
+        }
+        .stat-label {
+          font-size: 10px;
+          color: var(--dim);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          font-weight: 600;
+        }
+        .stat-value {
+          font-size: 18px;
+          font-weight: 900;
+          color: var(--text);
+        }
+        .stat-item.highlight .stat-value {
+          color: #fbbf24;
+        }
+        @media (max-width: 420px) {
+          .stats-bar {
+            flex-direction: column;
+            gap: 8px;
+          }
+          .stat-item {
+            flex-direction: row;
+            justify-content: space-between;
+            min-width: auto;
+            width: 100%;
+          }
         }
 
         .toolbar {
@@ -716,6 +911,25 @@ export default function Home() {
           background: rgba(148,163,184,0.15);
           color: #cbd5e1;
           border: 1px solid rgba(148,163,184,0.3);
+        }
+        .rarity-badge {
+          font-size: 11px;
+          font-weight: 700;
+          padding: 4px 8px;
+          border-radius: 6px;
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+        }
+        .rarity-badge.rare {
+          background: rgba(139,92,246,0.15);
+          color: #c4b5fd;
+          border: 1px solid rgba(139,92,246,0.3);
+        }
+        .rarity-badge.popular {
+          background: rgba(251,191,36,0.15);
+          color: #fde68a;
+          border: 1px solid rgba(251,191,36,0.3);
         }
         .address { margin-top: 4px; font-size: 12px; color: var(--dim); word-break: break-all; }
         .link { font-size: 12px; color: #89e6ff; text-decoration: underline; }
@@ -987,7 +1201,35 @@ export default function Home() {
           to { transform: translateY(0); opacity: 1; }
         }
 
-        .foot { margin-top: 18px; font-size: 12px; color: var(--dim); }
+        .foot {
+          margin-top: 18px;
+          font-size: 12px;
+          color: var(--dim);
+          text-align: center;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .zora-link {
+          color: #22d3ee;
+          text-decoration: none;
+          font-weight: 600;
+          transition: all 0.2s ease;
+        }
+        .zora-link:hover {
+          color: #a855f7;
+          text-decoration: underline;
+        }
+        .footer-stats {
+          font-size: 13px;
+          color: #fbbf24;
+          font-weight: 700;
+          padding: 6px 12px;
+          background: rgba(251,191,36,0.1);
+          border-radius: 8px;
+          border: 1px solid rgba(251,191,36,0.2);
+          display: inline-block;
+        }
       `}</style>
     </main>
   );

@@ -20,6 +20,9 @@ if (process.env.ZORA_API_KEY) {
 }
 export const dynamic = "force-dynamic";
 
+const recentlyShownCoins: string[] = [];
+const MAX_RECENT_CACHE = 50;
+
 // Type definitions
 interface SwapNode {
   activityType?: string;
@@ -394,30 +397,36 @@ function processComments(resp: ApiResponse | null): ProcessedComment[] {
 export async function GET() {
   try {
 
-    // Fetch larger pool for more variety
-    const res = await getCoinsTopVolume24h({ count: 200 });
+    // Fetch larger pool for maximum variety
+    const res = await getCoinsTopVolume24h({ count: 300 });
     const rawEdges = (res?.data?.exploreList?.edges ?? []) as ExploreEdgeRaw[];
 
     if (!rawEdges.length) {
       return NextResponse.json({ ok: false, error: "no-coins" }, { status: 500 });
     }
 
-    // Shuffle and take random 40 from pool to ensure variety
-    const candidatesRaw = take(shuffle(rawEdges), 40)
+    // Shuffle and take random 60 from pool to ensure variety
+    const candidatesRaw = take(shuffle(rawEdges), 60)
       .map((e) => e?.node)
       .filter((n): n is CoinRaw => Boolean(n && n.address));
 
     const candidates: Coin[] = candidatesRaw.map(normalizeCoin);
+
+    // Filter out recently shown coins
+    const freshCandidates = candidates.filter(c => !recentlyShownCoins.includes(c.address));
+    const finalCandidates = freshCandidates.length > 10 ? freshCandidates : candidates;
+    const poolSize = candidates.length;
+    const freshCoins = freshCandidates.length;
 
     let chosen: Coin | null = null;
     let swapsData: ProcessedSwap[] = [];
     let commentsData: ProcessedComment[] = [];
     let holdersData: ProcessedHolder[] = [];
 
-    // Try to find coin with activity (max 15 attempts for speed)
-    const maxAttempts = Math.min(15, candidates.length);
+    // Try to find coin with activity (max 20 attempts for speed)
+    const maxAttempts = Math.min(20, finalCandidates.length);
     for (let i = 0; i < maxAttempts; i++) {
-      const c = candidates[i];
+      const c = finalCandidates[i];
 
       const [sw, cm, ho] = await Promise.allSettled([
         getCoinSwaps({ address: c.address, chain: base.id, first: 12 }),
@@ -454,9 +463,9 @@ export async function GET() {
     }
 
     // Fallback: pick random coin from remaining candidates
-    if (!chosen && candidates.length > maxAttempts) {
-      const randomIndex = Math.floor(Math.random() * (candidates.length - maxAttempts)) + maxAttempts;
-      chosen = candidates[randomIndex];
+    if (!chosen && finalCandidates.length > maxAttempts) {
+      const randomIndex = Math.floor(Math.random() * (finalCandidates.length - maxAttempts)) + maxAttempts;
+      chosen = finalCandidates[randomIndex];
 
       const [sw, cm, ho] = await Promise.allSettled([
         getCoinSwaps({ address: chosen.address, chain: base.id, first: 12 }),
@@ -475,7 +484,7 @@ export async function GET() {
 
     // Final fallback
     if (!chosen) {
-      chosen = candidates[0];
+      chosen = finalCandidates[0] || candidates[0];
       const [sw, cm, ho] = await Promise.allSettled([
         getCoinSwaps({ address: chosen.address, chain: base.id, first: 12 }),
         getCoinComments({ address: chosen.address, chain: base.id, count: 20 }),
@@ -489,6 +498,12 @@ export async function GET() {
         chosen.address,
         base.id
       );
+    }
+
+    // Add to recently shown cache
+    recentlyShownCoins.push(chosen.address);
+    if (recentlyShownCoins.length > MAX_RECENT_CACHE) {
+      recentlyShownCoins.shift();
     }
 
     // Get full coin metadata
@@ -516,6 +531,9 @@ export async function GET() {
         sellCount,
         sentiment,
         timestamp: Date.now(),
+        poolSize,
+        freshCoins,
+        cacheSize: recentlyShownCoins.length,
       }
     });
   } catch (error) {
