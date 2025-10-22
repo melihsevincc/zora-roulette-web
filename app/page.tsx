@@ -119,13 +119,17 @@ function toNumber(v?: number | string): number | undefined {
 }
 
 /* ---------- Component ---------- */
+type Mode = 'volume' | 'trending' | 'new';
+
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<SpinResp | null>(null);
   const [spins, setSpins] = useState<number>(0);
   const [history, setHistory] = useState<string[]>([]);
   const [uniqueStreak, setUniqueStreak] = useState<number>(0);
-  const [bestStreak, setBestStreak] = useState<number>(0); // Track spun coins
+  const [bestStreak, setBestStreak] = useState<number>(0);
+  const [mode, setMode] = useState<Mode>('volume');
+  const [previousCoin, setPreviousCoin] = useState<Coin | null>(null); // Track spun coins
 
   const [verbose, setVerbose] = useState<boolean>(true);
   const [log, setLog] = useState<LogLine[]>([
@@ -153,7 +157,7 @@ export default function Home() {
       wheelRef.current?.classList.add("spinning");
       pushLog({ t: `[${nowHHMMSS()}] 🎰 Spinning…`, type: "info" });
 
-      const r = await fetch("/api/spin", { cache: "no-store" });
+      const r = await fetch(`/api/spin?mode=${mode}`, { cache: "no-store" });
       const j: SpinResp = await r.json();
 
       if (!j.ok) {
@@ -162,6 +166,9 @@ export default function Home() {
         return;
       }
 
+      if (data?.coin) {
+        setPreviousCoin(data.coin);
+      }
       setData(j);
       setSpins((s) => s + 1);
 
@@ -368,8 +375,12 @@ Try it yourself: Zora Roulette`;
           <div className="ring" />
           <div className="center">
             <div className="center-copy">
-              <div className="mode">Mode</div>
-              <div className="mode-value">Volume</div>
+              <div className="mode-label">Mode</div>
+              <div className="mode-value">
+                {mode === 'volume' && '📊 Volume'}
+                {mode === 'trending' && '🔥 Trending'}
+                {mode === 'new' && '✨ New'}
+              </div>
               <div className="spins">spins: {spins}</div>
               {uniqueStreak >= 5 && (
                 <div className="streak">🔥 {uniqueStreak}</div>
@@ -398,14 +409,39 @@ Try it yourself: Zora Roulette`;
         </section>
       )}
 
+      {/* Mode Selector */}
+      <section className="mode-selector">
+        <button
+          onClick={() => setMode('volume')}
+          className={`mode-btn ${mode === 'volume' ? 'active' : ''}`}
+          disabled={loading}
+        >
+          📊 Volume
+        </button>
+        <button
+          onClick={() => setMode('trending')}
+          className={`mode-btn ${mode === 'trending' ? 'active' : ''}`}
+          disabled={loading}
+        >
+          🔥 Trending
+        </button>
+        <button
+          onClick={() => setMode('new')}
+          className={`mode-btn ${mode === 'new' ? 'active' : ''}`}
+          disabled={loading}
+        >
+          ✨ New
+        </button>
+      </section>
+
       {/* Actions */}
       <section className="toolbar">
         <div className="actions">
-          <button onClick={spin} disabled={loading} className={`btn ${loading ? "busy" : ""}`}>
-            {loading ? "Spinning..." : "Spin"}
+          <button onClick={spin} disabled={loading} className={`btn primary ${loading ? "busy" : ""}`}>
+            {loading ? "🎰 Spinning..." : "🎲 Spin the Wheel"}
           </button>
           <button onClick={share} className="btn secondary" disabled={!c}>
-            Share
+            📤 Share
           </button>
         </div>
 
@@ -443,6 +479,33 @@ Try it yourself: Zora Roulette`;
       {/* Error */}
       {data && !data.ok && (
         <div className="error">Error: {data.error}</div>
+      )}
+
+      {/* Comparison */}
+      {c && previousCoin && (
+        <section className="comparison">
+          <div className="comparison-title">📊 vs Previous Spin</div>
+          <div className="comparison-grid">
+            <div className="comparison-item">
+              <span className="comparison-label">Market Cap</span>
+              <span className={`comparison-value ${(toNumber(c.marketCap) ?? 0) > (toNumber(previousCoin.marketCap) ?? 0) ? 'up' : 'down'}`}>
+                {(toNumber(c.marketCap) ?? 0) > (toNumber(previousCoin.marketCap) ?? 0) ? '📈 Higher' : '📉 Lower'}
+              </span>
+            </div>
+            <div className="comparison-item">
+              <span className="comparison-label">Volume</span>
+              <span className={`comparison-value ${(toNumber(c.volume24h) ?? 0) > (toNumber(previousCoin.volume24h) ?? 0) ? 'up' : 'down'}`}>
+                {(toNumber(c.volume24h) ?? 0) > (toNumber(previousCoin.volume24h) ?? 0) ? '📈 Higher' : '📉 Lower'}
+              </span>
+            </div>
+            <div className="comparison-item">
+              <span className="comparison-label">Holders</span>
+              <span className={`comparison-value ${(toNumber(c.uniqueHolders) ?? 0) > (toNumber(previousCoin.uniqueHolders) ?? 0) ? 'up' : 'down'}`}>
+                {(toNumber(c.uniqueHolders) ?? 0) > (toNumber(previousCoin.uniqueHolders) ?? 0) ? '📈 More' : '📉 Less'}
+              </span>
+            </div>
+          </div>
+        </section>
       )}
 
       {/* Coin Card */}
@@ -634,75 +697,104 @@ Try it yourself: Zora Roulette`;
       {/* --- styles: styled-jsx global (reset/theme) --- */}
       <style jsx global>{`
         :root {
-          --bg1: #050b12;
-          --bg2: #0b1f2e;
-          --text: #e6f0ff;
-          --dim: #9fb2c5;
-          --panel: rgba(255,255,255,0.06);
-          --panel-brd: rgba(255,255,255,0.12);
-          --glow: rgba(34,211,238,0.28);
-          --buy: #34d399;
-          --sell: #f87171;
+          --bg1: #000000;
+          --bg2: #0a0a0a;
+          --text: #ffffff;
+          --dim: #a1a1aa;
+          --panel: rgba(255,255,255,0.03);
+          --panel-brd: rgba(255,255,255,0.08);
+          --glow: rgba(255,255,255,0.05);
+          --buy: #10b981;
+          --sell: #ef4444;
+          --accent: #ffffff;
+          --accent-dim: #71717a;
         }
         * { box-sizing: border-box; }
         html, body { height: 100%; }
-        body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Inter, Roboto, Arial; color: var(--text); }
+        body {
+          margin: 0;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+          color: var(--text);
+          background: var(--bg1);
+        }
       `}</style>
 
       {/* --- styles: page --- */}
       <style jsx>{`
         .screen {
           min-height: 100vh;
-          background:
-            radial-gradient(1200px 600px at 50% -10%, var(--bg2) 0%, var(--bg1) 45%, #000 100%),
-            radial-gradient(600px 300px at 85% 10%, rgba(34,211,238,0.12), transparent 70%),
-            radial-gradient(600px 300px at 15% 15%, rgba(168,85,247,0.12), transparent 70%);
+          background: #000000;
           display: flex;
           flex-direction: column;
           align-items: center;
-          padding: 32px 20px 40px;
+          padding: 40px 20px;
         }
 
-        .header { text-align: center; margin-top: 8px; }
+        .header { text-align: center; margin-bottom: 24px; }
         .title {
-          font-size: 28px;
-          font-weight: 900;
-          letter-spacing: .4px;
-          background: linear-gradient(90deg, #22d3ee, #a855f7);
-          -webkit-background-clip: text;
-          background-clip: text;
-          color: transparent;
-          filter: drop-shadow(0 6px 30px rgba(34,211,238,0.25));
+          font-size: 32px;
+          font-weight: 700;
+          letter-spacing: -0.02em;
+          color: #ffffff;
+          margin: 0;
         }
-        .emoji { margin-right: 6px; }
-        .subtitle { margin-top: 6px; font-size: 12px; color: var(--dim); }
+        .emoji { margin-right: 8px; }
+        .subtitle {
+          margin-top: 8px;
+          font-size: 14px;
+          color: var(--dim);
+          font-weight: 400;
+        }
 
-        .roulette { margin-top: 28px; }
+        .roulette { margin: 32px 0; }
         .wheel {
           position: relative;
-          width: 260px; height: 260px;
-          perspective: 900px;
+          width: 320px;
+          height: 320px;
+          perspective: 1000px;
           transform-style: preserve-3d;
-          transition: transform 0.3s ease;
-          filter: drop-shadow(0 10px 40px rgba(34,211,238,0.18));
+          transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
-        .wheel.spinning { animation: spin 1.15s cubic-bezier(0.22,1,0.36,1); }
+        .wheel.spinning {
+          animation: spin 1.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
         @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(720deg); }
+          0% { transform: rotate(0deg) scale(1); }
+          50% { transform: rotate(360deg) scale(1.05); }
+          100% { transform: rotate(720deg) scale(1); }
         }
 
         .ring {
-          position: absolute; inset: 0;
+          position: absolute;
+          inset: 0;
           border-radius: 9999px;
-          background: conic-gradient(
-            from 0deg,
-            #10b981 0 18deg, #ef4444 18deg 36deg, #3b82f6 36deg 54deg, #f59e0b 54deg 72deg, #22d3ee 72deg 90deg,
-            #a855f7 90deg 108deg, #e11d48 108deg 126deg, #22c55e 126deg 144deg, #06b6d4 144deg 162deg, #84cc16 162deg 180deg,
-            #ef4444 180deg 198deg, #10b981 198deg 216deg, #3b82f6 216deg 234deg, #f59e0b 234deg 252deg, #a855f7 252deg 270deg,
-            #22d3ee 270deg 288deg, #e11d48 288deg 306deg, #06b6d4 306deg 324deg, #84cc16 324deg 342deg, #22c55e 342deg 360deg
-          );
-          box-shadow: inset 0 0 30px rgba(0,0,0,0.35), 0 0 40px rgba(34,211,238,0.18);
+          background:
+            conic-gradient(
+              from 0deg,
+              #ffffff 0deg 20deg,
+              #e5e5e5 20deg 40deg,
+              #d4d4d4 40deg 60deg,
+              #a3a3a3 60deg 80deg,
+              #737373 80deg 100deg,
+              #525252 100deg 120deg,
+              #404040 120deg 140deg,
+              #262626 140deg 160deg,
+              #171717 160deg 180deg,
+              #ffffff 180deg 200deg,
+              #e5e5e5 200deg 220deg,
+              #d4d4d4 220deg 240deg,
+              #a3a3a3 240deg 260deg,
+              #737373 260deg 280deg,
+              #525252 280deg 300deg,
+              #404040 300deg 320deg,
+              #262626 320deg 340deg,
+              #171717 340deg 360deg
+            );
+          border: 2px solid #ffffff;
+          box-shadow:
+            inset 0 0 40px rgba(0, 0, 0, 0.5),
+            0 0 60px rgba(255, 255, 255, 0.1),
+            0 8px 32px rgba(0, 0, 0, 0.4);
         }
         .center {
           position: absolute; inset: 0;
@@ -710,18 +802,21 @@ Try it yourself: Zora Roulette`;
         }
         .center::before {
           content: "";
-          width: 140px; height: 140px;
+          width: 180px;
+          height: 180px;
           border-radius: 9999px;
-          background: rgba(0,0,0,0.6);
-          border: 1px solid var(--panel-brd);
-          box-shadow: 0 10px 40px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.03);
-          backdrop-filter: blur(6px);
+          background: #000000;
+          border: 3px solid #ffffff;
+          box-shadow:
+            0 0 0 8px rgba(255, 255, 255, 0.1),
+            0 8px 32px rgba(0, 0, 0, 0.6),
+            inset 0 2px 8px rgba(255, 255, 255, 0.1);
           position: absolute;
         }
         .center-copy { position: relative; text-align: center; z-index: 2; }
-        .mode { font-size: 12px; color: var(--dim); }
-        .mode-value { margin-top: 4px; font-weight: 800; filter: drop-shadow(0 0 18px rgba(34,211,238,0.35)); }
-        .spins { margin-top: 8px; font-size: 12px; color: var(--dim); }
+        .mode-label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .mode-value { margin-top: 6px; font-weight: 700; font-size: 16px; color: #ffffff; }
+        .spins { margin-top: 10px; font-size: 13px; color: var(--dim); font-weight: 500; }
         .streak {
           margin-top: 6px;
           font-size: 16px;
@@ -737,13 +832,49 @@ Try it yourself: Zora Roulette`;
 
         .pointer {
           position: absolute;
-          top: -10px; left: 50%;
+          top: -16px;
+          left: 50%;
           transform: translateX(-50%);
-          width: 0; height: 0;
-          border-left: 10px solid transparent;
-          border-right: 10px solid transparent;
-          border-bottom: 14px solid #22d3ee;
-          filter: drop-shadow(0 0 8px rgba(34,211,238,0.7));
+          width: 0;
+          height: 0;
+          border-left: 14px solid transparent;
+          border-right: 14px solid transparent;
+          border-bottom: 20px solid #ffffff;
+          filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
+        }
+
+        .mode-selector {
+          margin: 24px 0 16px;
+          display: flex;
+          gap: 8px;
+          padding: 4px;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 12px;
+        }
+        .mode-btn {
+          appearance: none;
+          border: 0;
+          padding: 10px 20px;
+          border-radius: 8px;
+          font-size: 14px;
+          font-weight: 600;
+          background: transparent;
+          color: var(--dim);
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .mode-btn:hover:not(:disabled) {
+          background: rgba(255,255,255,0.08);
+          color: var(--text);
+        }
+        .mode-btn.active {
+          background: #ffffff;
+          color: #000000;
+        }
+        .mode-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
 
         .stats-bar {
@@ -751,10 +882,9 @@ Try it yourself: Zora Roulette`;
           display: flex;
           gap: 12px;
           padding: 12px 16px;
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.08);
           border-radius: 12px;
-          backdrop-filter: blur(8px);
         }
         .stat-item {
           display: flex;
@@ -813,67 +943,136 @@ Try it yourself: Zora Roulette`;
         .btn {
           appearance: none;
           border: 0;
-          padding: 12px 18px;
-          border-radius: 14px;
-          color: #001510;
-          font-weight: 800;
-          background: linear-gradient(180deg, #34d399, #10b981);
-          box-shadow:
-            0 12px 30px rgba(16,185,129,0.35),
-            0 0 0 1px rgba(255,255,255,0.08) inset,
-            0 1px 0 rgba(255,255,255,0.18) inset;
+          padding: 14px 28px;
+          border-radius: 12px;
+          font-size: 15px;
+          font-weight: 600;
           cursor: pointer;
-          transition: transform .15s ease, box-shadow .15s ease, filter .15s ease, opacity .15s ease;
+          transition: all 0.2s ease;
         }
-        .btn:hover { transform: translateY(-1px); filter: saturate(1.1); }
-        .btn:active { transform: translateY(1px) scale(0.99); }
-        .btn.busy { opacity: .7; cursor: not-allowed; }
+        .btn.primary {
+          background: #ffffff;
+          color: #000000;
+          border: 2px solid #ffffff;
+        }
+        .btn.primary:hover:not(:disabled) {
+          background: #f4f4f5;
+          transform: translateY(-2px);
+          box-shadow: 0 8px 24px rgba(255,255,255,0.2);
+        }
+        .btn.primary:active {
+          transform: translateY(0);
+        }
+        .btn.primary.busy {
+          opacity: 0.7;
+          cursor: not-allowed;
+        }
 
         .btn.secondary {
-          background: linear-gradient(180deg, #93c5fd, #60a5fa);
-          color: #001225;
-          box-shadow:
-            0 12px 30px rgba(59,130,246,0.35),
-            0 0 0 1px rgba(255,255,255,0.08) inset,
-            0 1px 0 rgba(255,255,255,0.18) inset;
+          background: transparent;
+          color: #ffffff;
+          border: 2px solid rgba(255,255,255,0.2);
+        }
+        .btn.secondary:hover:not(:disabled) {
+          border-color: #ffffff;
+          background: rgba(255,255,255,0.1);
         }
         .btn.ghost {
-          background: rgba(255,255,255,0.06);
+          background: transparent;
+          color: var(--dim);
+          border: 1px solid rgba(255,255,255,0.1);
+          padding: 10px 16px;
+          font-size: 13px;
+        }
+        .btn.ghost:hover {
+          border-color: rgba(255,255,255,0.3);
           color: var(--text);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);
         }
 
         .error {
-          margin-top: 16px;
-          color: #fecaca;
-          background: rgba(239,68,68,0.08);
-          border: 1px solid rgba(239,68,68,0.25);
-          padding: 10px 12px;
+          margin-top: 24px;
+          color: #fca5a5;
+          background: rgba(239,68,68,0.1);
+          border: 1px solid rgba(239,68,68,0.2);
+          padding: 16px 20px;
           border-radius: 12px;
           font-size: 14px;
-          max-width: 680px;
-          width: calc(100% - 32px);
+          max-width: 900px;
+          width: 100%;
           text-align: center;
         }
 
+        .comparison {
+          margin-top: 24px;
+          width: 100%;
+          max-width: 900px;
+          padding: 20px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 12px;
+          animation: slideIn 0.4s ease;
+        }
+        @keyframes slideIn {
+          from {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .comparison-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--dim);
+          margin-bottom: 12px;
+        }
+        .comparison-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 16px;
+        }
+        .comparison-item {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .comparison-label {
+          font-size: 12px;
+          color: var(--dim);
+          font-weight: 500;
+        }
+        .comparison-value {
+          font-size: 15px;
+          font-weight: 600;
+        }
+        .comparison-value.up {
+          color: #10b981;
+        }
+        .comparison-value.down {
+          color: #ef4444;
+        }
+        @media (max-width: 600px) {
+          .comparison-grid {
+            grid-template-columns: 1fr;
+            gap: 12px;
+          }
+        }
+
         .card {
-          margin-top: 28px;
+          margin-top: 32px;
           width: 100%;
           max-width: 900px;
           border-radius: 16px;
-          border: 1px solid var(--panel-brd);
-          background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
-          backdrop-filter: blur(8px);
-          padding: 16px;
-          position: relative;
+          border: 1px solid rgba(255,255,255,0.1);
+          background: rgba(255,255,255,0.03);
+          padding: 24px;
+          transition: all 0.3s ease;
         }
-        .card::after {
-          content: "";
-          position: absolute; inset: -1px;
-          border-radius: 16px;
-          box-shadow: 0 0 34px var(--glow);
-          pointer-events: none;
-          opacity: .35;
+        .card:hover {
+          border-color: rgba(255,255,255,0.2);
+          background: rgba(255,255,255,0.05);
         }
         .card-row {
           display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -980,22 +1179,25 @@ Try it yourself: Zora Roulette`;
 
         /* Panel (Swaps / Holders) */
         .panel {
-          margin-top: 22px;
+          margin-top: 24px;
           width: 100%;
           max-width: 900px;
-          border: 1px solid var(--panel-brd);
-          border-radius: 12px;
-          background: rgba(2,6,15,0.5);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 16px;
+          background: rgba(255,255,255,0.03);
           overflow: hidden;
+          transition: all 0.3s ease;
+        }
+        .panel:hover {
+          border-color: rgba(255,255,255,0.2);
         }
         .panel-head {
-          padding: 10px 12px;
-          font-size: 13px;
-          font-weight: 700;
-          color: #cbe7ff;
-          background: rgba(255,255,255,0.05);
-          border-bottom: 1px solid rgba(255,255,255,0.06);
+          padding: 16px 20px;
+          font-size: 15px;
+          font-weight: 600;
+          color: #ffffff;
+          background: rgba(255,255,255,0.03);
+          border-bottom: 1px solid rgba(255,255,255,0.08);
         }
         .panel-foot {
           padding: 10px 12px;

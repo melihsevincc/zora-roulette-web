@@ -219,26 +219,26 @@ function formatTimestamp(ts: number | null): { date: string; time: string } {
   }
 }
 
-// Fetch token metadata
-async function fetchTokenMeta(address: string, chainId: number) {
-  try {
-    const r = await getCoin({ address, chain: chainId });
-    const c = r?.data?.zora20Token;
-
-    if (!c) return { decimals: 18, supplyRaw: null };
-
-    // Zora tokens are always 18 decimals (ERC20 standard on Base)
-    const decimals = 18;
-    const supplyRaw = c.totalSupply ?? null;
-
-    return {
-      decimals,
-      supplyRaw: supplyRaw != null ? String(supplyRaw) : null
-    };
-  } catch {
-    return { decimals: 18, supplyRaw: null };
-  }
-}
+// Fetch token metadata (unused)
+// async function fetchTokenMeta(address: string, chainId: number) {
+//   try {
+//     const r = await getCoin({ address, chain: chainId });
+//     const c = r?.data?.zora20Token;
+//
+//     if (!c) return { decimals: 18, supplyRaw: null };
+//
+//     // Zora tokens are always 18 decimals (ERC20 standard on Base)
+//     const decimals = 18;
+//     const supplyRaw = c.totalSupply ?? null;
+//
+//     return {
+//       decimals,
+//       supplyRaw: supplyRaw != null ? String(supplyRaw) : null
+//     };
+//   } catch {
+//     return { decimals: 18, supplyRaw: null };
+//   }
+// }
 
 // Shorten address for display
 function shortAddress(addr: string | undefined): string {
@@ -301,29 +301,15 @@ function processSwaps(resp: ApiResponse | null, decimalsGuess = 18): ProcessedSw
 }
 
 // Process holders with percentage calculation
-async function processHolders(resp: ApiResponse | null, coinAddress: string, chainId = base.id): Promise<ProcessedHolder[]> {
+async function processHolders(resp: ApiResponse | null): Promise<ProcessedHolder[]> {
   const edges = resp?.data?.zora20Token?.tokenBalances?.edges || [];
   if (!edges.length) return [];
 
-  // Fetch token metadata for accurate calculations
-  const meta = await fetchTokenMeta(coinAddress, chainId);
+  // Zora tokens are always 18 decimals
+  const tokenDecimals = 18;
 
-  // Zora tokens are always 18 decimals, but check response first
-  const tokenDecimals = resp?.data?.zora20Token?.decimals != null
-    ? Number(resp.data.zora20Token.decimals)
-    : meta.decimals;
-
-  let totalSupply = 0;
-  if (meta.supplyRaw) {
-    try {
-      totalSupply = formatBalanceRaw(meta.supplyRaw, tokenDecimals);
-    } catch {
-      // ignore
-    }
-  }
-
-  // Calculate balances for top 10
-  const holders = edges.slice(0, 10).map((edge) => {
+  // Calculate balances for top 10 (skip first one - it's usually the market maker)
+  const allHolders = edges.slice(0, 11).map((edge) => {
     const node = edge?.node;
     if (!node) return null;
 
@@ -337,22 +323,27 @@ async function processHolders(resp: ApiResponse | null, coinAddress: string, cha
     const balance = formatBalanceRaw(balRaw, tokenDecimals);
 
     return { holder, balance };
-  }).filter((item): item is { holder: string; balance: number } => item !== null);
+  }).filter((item): item is { holder: string; balance: number } => item !== null && item.balance > 0);
 
-  // Calculate total of top 10 for percentage
+  // Skip first holder (likely market maker) and take next 10
+  const holders = allHolders.slice(1, 11);
+
+  // Calculate total of these 10 holders for percentage
   const top10Total = holders.reduce((sum, h) => sum + h.balance, 0);
-  const useTotal = totalSupply > 0 ? totalSupply : top10Total;
 
-  // Add percentage to each holder
+  // Use top 10 total for percentage calculation (not total supply)
   return holders.map((h, idx) => {
-    const percentage = useTotal > 0 ? (h.balance / useTotal) * 100 : 0;
+    const percentage = top10Total > 0 ? (h.balance / top10Total) * 100 : 0;
+
+    // Ensure percentage is reasonable
+    const safePercentage = Math.min(100, Math.max(0, percentage));
 
     return {
       rank: idx + 1,
       holder: h.holder,
       balance: h.balance,
-      percentage: Number(percentage.toFixed(2)),
-      isTopHolder: idx === 0, // Mark #1 holder
+      percentage: Number(safePercentage.toFixed(1)),
+      isTopHolder: idx === 0,
     };
   });
 }
@@ -396,6 +387,9 @@ function processComments(resp: ApiResponse | null): ProcessedComment[] {
 
 export async function GET() {
   try {
+    // Get mode from query params (for future use)
+    // const { searchParams } = new URL(request.url);
+    // const mode = searchParams.get('mode') || 'volume';
 
     // Fetch larger pool for maximum variety
     const res = await getCoinsTopVolume24h({ count: 300 });
@@ -454,9 +448,7 @@ export async function GET() {
         swapsData = processSwaps(sw.status === "fulfilled" ? sw.value as ApiResponse : null);
         commentsData = processComments(cm.status === "fulfilled" ? cm.value as ApiResponse : null);
         holdersData = await processHolders(
-          ho.status === "fulfilled" ? ho.value as ApiResponse : null,
-          c.address,
-          base.id
+          ho.status === "fulfilled" ? ho.value as ApiResponse : null
         );
         break;
       }
@@ -476,9 +468,7 @@ export async function GET() {
       swapsData = processSwaps(sw.status === "fulfilled" ? sw.value as ApiResponse : null);
       commentsData = processComments(cm.status === "fulfilled" ? cm.value as ApiResponse : null);
       holdersData = await processHolders(
-        ho.status === "fulfilled" ? ho.value as ApiResponse : null,
-        chosen.address,
-        base.id
+        ho.status === "fulfilled" ? ho.value as ApiResponse : null
       );
     }
 
@@ -494,9 +484,7 @@ export async function GET() {
       swapsData = processSwaps(sw.status === "fulfilled" ? sw.value as ApiResponse : null);
       commentsData = processComments(cm.status === "fulfilled" ? cm.value as ApiResponse : null);
       holdersData = await processHolders(
-        ho.status === "fulfilled" ? ho.value as ApiResponse : null,
-        chosen.address,
-        base.id
+        ho.status === "fulfilled" ? ho.value as ApiResponse : null
       );
     }
 
