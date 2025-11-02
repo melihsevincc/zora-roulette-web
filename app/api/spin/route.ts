@@ -385,11 +385,15 @@ function processComments(resp: ApiResponse | null): ProcessedComment[] {
     .filter((item): item is ProcessedComment => item !== null);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    // Get mode from query params (for future use)
-    // const { searchParams } = new URL(request.url);
-    // const mode = searchParams.get('mode') || 'volume';
+    const { searchParams } = new URL(request.url);
+    const mode = (searchParams.get("mode") ?? "volume").toLowerCase();
+    const marketCapMin = Number(searchParams.get("marketCapMin") ?? "0");
+    const marketCapMax = Number(searchParams.get("marketCapMax") ?? "0");
+    const holdersMin = Number(searchParams.get("holdersMin") ?? "0");
+    const holdersMax = Number(searchParams.get("holdersMax") ?? "0");
+    const volumeMin = Number(searchParams.get("volumeMin") ?? "0");
 
     // Fetch larger pool for maximum variety
     const res = await getCoinsTopVolume24h({ count: 300 });
@@ -404,7 +408,46 @@ export async function GET() {
       .map((e) => e?.node)
       .filter((n): n is CoinRaw => Boolean(n && n.address));
 
-    const candidates: Coin[] = candidatesRaw.map(normalizeCoin);
+    let candidates: Coin[] = candidatesRaw.map(normalizeCoin);
+
+    const capMin = Number.isFinite(marketCapMin) ? Math.max(0, marketCapMin) : 0;
+    const capMax = Number.isFinite(marketCapMax) && marketCapMax > 0 ? marketCapMax : Number.POSITIVE_INFINITY;
+    const holdMin = Number.isFinite(holdersMin) ? Math.max(0, holdersMin) : 0;
+    const holdMax = Number.isFinite(holdersMax) && holdersMax > 0 ? holdersMax : Number.POSITIVE_INFINITY;
+    const volMin = Number.isFinite(volumeMin) ? Math.max(0, volumeMin) : 0;
+
+    candidates = candidates.filter((c) => {
+      const cap = toNum(c.marketCap) ?? 0;
+      const holders = toNum(c.uniqueHolders) ?? 0;
+      const volume = toNum(c.volume24h) ?? 0;
+      if (cap < capMin) return false;
+      if (cap > capMax) return false;
+      if (holders < holdMin) return false;
+      if (holders > holdMax) return false;
+      if (volume < volMin) return false;
+      return true;
+    });
+
+    if (!candidates.length) {
+      candidates = candidatesRaw.map(normalizeCoin);
+    }
+
+    if (mode === "trending") {
+      candidates = candidates.sort(
+        (a, b) => (toNum(b.volume24h) ?? 0) - (toNum(a.volume24h) ?? 0)
+      );
+    } else if (mode === "new") {
+      const getCreatedAt = (value: Coin) => {
+        const raw = value.createdAt;
+        if (typeof raw === "number") return raw;
+        if (typeof raw === "string") {
+          const parsed = Date.parse(raw);
+          return Number.isFinite(parsed) ? parsed : 0;
+        }
+        return 0;
+      };
+      candidates = candidates.sort((a, b) => getCreatedAt(b) - getCreatedAt(a));
+    }
 
     // Filter out recently shown coins
     const freshCandidates = candidates.filter(c => !recentlyShownCoins.includes(c.address));
