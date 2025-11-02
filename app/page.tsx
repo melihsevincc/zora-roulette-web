@@ -1,8 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-/* ---------- Types ---------- */
 type Coin = {
   name: string;
   symbol?: string;
@@ -26,8 +25,11 @@ type SwapUI = {
 
 type CommentUI = {
   user?: string;
+  author?: string;
   text?: string;
+  date?: string;
   ts?: number | string;
+  timestamp?: number | string;
 };
 
 type HolderRow = {
@@ -56,7 +58,7 @@ type SpinResp = {
     totalActivity: number;
     buyCount: number;
     sellCount: number;
-    sentiment: 'bullish' | 'bearish' | 'neutral';
+    sentiment: "bullish" | "bearish" | "neutral";
     timestamp: number;
     poolSize?: number;
     freshCoins?: number;
@@ -65,10 +67,65 @@ type SpinResp = {
   error?: string;
 };
 
+type Mode = "volume" | "trending" | "new";
+
+type SpinEntry = {
+  id: string;
+  timestamp: number;
+  coin: Coin;
+  details?: DetailsBlock;
+  stats?: SpinResp["stats"];
+  favorite?: boolean;
+};
+
+type LeaderboardState = {
+  dailyKey: string;
+  weeklyKey: string;
+  dailyTopStreak: number;
+  weeklyTopStreak: number;
+  rareFinds: number;
+  bestStreak: number;
+  totalSpins: number;
+};
+
+type AchievementRecord = Record<string, boolean>;
+
+type Filters = {
+  marketCap: [number, number];
+  holders: [number, number];
+  volumeMin: number;
+};
+
 type LogLevel = "ok" | "warn" | "info";
+
 type LogLine = { t: string; type: LogLevel };
 
-/* ---------- Helpers ---------- */
+const MAX_HISTORY = 10;
+const STORAGE_KEYS = {
+  history: "zora-roulette-history",
+  favorites: "zora-roulette-favorites",
+  theme: "zora-roulette-theme",
+  mute: "zora-roulette-muted",
+  watchlist: "zora-roulette-watchlist",
+  leaderboard: "zora-roulette-leaderboard",
+  achievements: "zora-roulette-achievements",
+};
+
+const FILTER_DEFAULTS: Filters = {
+  marketCap: [0, 1_000_000_000],
+  holders: [0, 5000],
+  volumeMin: 0,
+};
+
+const ACHIEVEMENT_DEFS = [
+  { id: "first-spin", label: "First Spin", description: "Spin the wheel once", icon: "🎯" },
+  { id: "lucky-rare", label: "Rare Hunter", description: "Find a coin with under 50 holders", icon: "💎" },
+  { id: "streak-5", label: "Hot Streak", description: "Reach a unique streak of 5", icon: "🔥" },
+  { id: "streak-10", label: "On Fire", description: "Reach a unique streak of 10", icon: "⚡" },
+  { id: "spins-25", label: "High Roller", description: "Spin 25 times in a session", icon: "🏆" },
+  { id: "share", label: "Town Crier", description: "Share a spin on X", icon: "📣" },
+] as const;
+
 function compact(n?: number | string) {
   const x = typeof n === "string" ? Number(n) : n;
   if (x == null || Number.isNaN(x)) return "—";
@@ -79,12 +136,22 @@ function compact(n?: number | string) {
   if (a >= 1e3) return (x / 1e3).toFixed(2) + "K";
   return x.toFixed(2).replace(/\.00$/, "");
 }
+
 function pct(v?: number) {
   if (v == null || Number.isNaN(v)) return "N/A";
-  const s = v > 0 ? "+" : "";
-  return `${s}${v.toFixed(2)}%`;
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${v.toFixed(2)}%`;
 }
-function timeAgo(ts: number) {
+
+function toNumber(v?: number | string): number | undefined {
+  if (v == null) return undefined;
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  const n = Number(String(v).replaceAll(",", ""));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function timeAgo(ts?: number) {
+  if (!ts) return "—";
   const d = Math.max(0, Date.now() - ts);
   const s = Math.floor(d / 1000);
   if (s < 60) return `${s}s ago`;
@@ -99,1340 +166,1163 @@ function timeAgo(ts: number) {
   const yrs = Math.floor(mon / 12);
   return `${yrs}y ago`;
 }
-function shortAddr(a?: string) {
-  if (!a) return "—";
-  if (a.includes(".")) return a;
-  return a.length > 10 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
-}
-function nowHHMMSS() {
-  return new Date().toLocaleTimeString("en-US", { hour12: false });
-}
+
 function holdersArray(h: HoldersPayload): HolderRow[] {
   if (!h) return [];
-  return Array.isArray(h) ? h : (h.top10 ?? []);
-}
-function toNumber(v?: number | string): number | undefined {
-  if (v == null) return undefined;
-  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
-  const n = Number(String(v).replaceAll(",", ""));
-  return Number.isFinite(n) ? n : undefined;
+  return Array.isArray(h) ? h : h.top10 ?? [];
 }
 
-/* ---------- Component ---------- */
-type Mode = 'volume' | 'trending' | 'new';
+function getDayKey(date = new Date()) {
+  return `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`;
+}
 
+function getWeekKey(date = new Date()) {
+  const temp = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNum = temp.getUTCDay() || 7;
+  temp.setUTCDate(temp.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(temp.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((temp.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${temp.getUTCFullYear()}-W${weekNo}`;
+}
+
+function getSentimentEmoji(sentiment?: "bullish" | "bearish" | "neutral") {
+  if (sentiment === "bullish") return "🚀";
+  if (sentiment === "bearish") return "📉";
+  return "😐";
+}
+
+function buildInsights(entry: SpinEntry | null, history: SpinEntry[]) {
+  if (!entry) return [] as string[];
+  const insights: string[] = [];
+  const marketCap = toNumber(entry.coin.marketCap) ?? 0;
+  const volume = toNumber(entry.coin.volume24h) ?? 0;
+  const holders = toNumber(entry.coin.uniqueHolders) ?? 0;
+  const change = entry.coin.change24h ?? 0;
+
+  if (marketCap > 0) {
+    if (marketCap > 500_000_000) insights.push("Major cap project with strong liquidity footprint.");
+    else if (marketCap > 50_000_000) insights.push("Mid-cap play with room to grow.");
+    else insights.push("Micro-cap degen territory — high risk, high reward.");
+  }
+
+  if (volume > marketCap * 0.4) insights.push("Volume is humming relative to market cap — potential breakout.");
+  else if (volume < marketCap * 0.05) insights.push("Volume is thin right now. Expect volatility.");
+
+  if (holders < 50) insights.push("Scarce supply with very few holders — any demand spike moves price fast.");
+  else if (holders > 2000) insights.push("Large community of holders — momentum can sustain longer moves.");
+
+  if (change) insights.push(`24h change sits at ${pct(change)}.`);
+
+  const previous = history.slice(-3, -1).map((h) => h.coin);
+  if (previous.length) {
+    const prevAvgCap =
+      previous.reduce((acc, c) => acc + (toNumber(c.marketCap) ?? 0), 0) / previous.length || 0;
+    if (marketCap > prevAvgCap * 1.5) insights.push("Sharp uptick compared to recent spins — rotation to higher caps.");
+  }
+
+  if (entry.stats) {
+    const { buyCount, sellCount, totalActivity } = entry.stats;
+    if (buyCount > sellCount * 1.5) insights.push("Buy-side flow dominates the tape right now.");
+    if (totalActivity === 0) insights.push("Quiet order books — consider waiting for confirmation.");
+  }
+
+  if (!insights.length) insights.push("Steady project with balanced stats. Keep it on the radar.");
+  return insights;
+}
 export default function Home() {
+  const [mode, setMode] = useState<Mode>("volume");
+  const [filters, setFilters] = useState<Filters>(FILTER_DEFAULTS);
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<SpinResp | null>(null);
-  const [spins, setSpins] = useState<number>(0);
-  const [history, setHistory] = useState<string[]>([]);
-  const [uniqueStreak, setUniqueStreak] = useState<number>(0);
-  const [bestStreak, setBestStreak] = useState<number>(0);
-  const [mode, setMode] = useState<Mode>('volume');
-  const [previousCoin, setPreviousCoin] = useState<Coin | null>(null); // Track spun coins
-
-  const [verbose, setVerbose] = useState<boolean>(true);
-  const [log, setLog] = useState<LogLine[]>([
-    { t: "💫 Live terminal ready. Press SPIN.", type: "info" },
-  ]);
+  const [data, setData] = useState<SpinEntry | null>(null);
+  const [history, setHistory] = useState<SpinEntry[]>([]);
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [spins, setSpins] = useState(0);
+  const [uniqueStreak, setUniqueStreak] = useState(0);
+  const [bestStreak, setBestStreak] = useState(0);
+  const [log, setLog] = useState<LogLine[]>([{ t: "💫 Live terminal ready. Press SPIN.", type: "info" }]);
   const [toast, setToast] = useState<string | null>(null);
+  const [mute, setMute] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [watchlist, setWatchlist] = useState<Record<string, Coin>>({});
+  const [leaderboard, setLeaderboard] = useState<LeaderboardState>({
+    dailyKey: getDayKey(),
+    weeklyKey: getWeekKey(),
+    dailyTopStreak: 0,
+    weeklyTopStreak: 0,
+    rareFinds: 0,
+    bestStreak: 0,
+    totalSpins: 0,
+  });
+  const [achievementState, setAchievementState] = useState<AchievementRecord>({});
+  const [showDetailsSheet, setShowDetailsSheet] = useState(false);
+  const [sessionReplaying, setSessionReplaying] = useState(false);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [confetti, setConfetti] = useState(false);
 
   const wheelRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<HTMLDivElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const confettiTimeout = useRef<number | null>(null);
+  const replayTimeout = useRef<number | null>(null);
+  const replayIndex = useRef(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      const storedHistory = window.localStorage.getItem(STORAGE_KEYS.history);
+      if (storedHistory) {
+        const parsed = JSON.parse(storedHistory) as SpinEntry[];
+        setHistory(parsed.slice(-MAX_HISTORY));
+        if (parsed.length) {
+          const last = parsed[parsed.length - 1];
+          setData(last);
+          setSelectedHistoryId(last.id);
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const storedFavorites = window.localStorage.getItem(STORAGE_KEYS.favorites);
+      if (storedFavorites) setFavorites(JSON.parse(storedFavorites));
+    } catch {
+      // ignore
+    }
+
+    try {
+      const storedTheme = window.localStorage.getItem(STORAGE_KEYS.theme) as "dark" | "light" | null;
+      if (storedTheme) setTheme(storedTheme);
+    } catch {
+      // ignore
+    }
+
+    try {
+      const storedMute = window.localStorage.getItem(STORAGE_KEYS.mute);
+      if (storedMute) setMute(storedMute === "true");
+    } catch {
+      // ignore
+    }
+
+    try {
+      const storedWatchlist = window.localStorage.getItem(STORAGE_KEYS.watchlist);
+      if (storedWatchlist) setWatchlist(JSON.parse(storedWatchlist));
+    } catch {
+      // ignore
+    }
+
+    try {
+      const storedLeaderboard = window.localStorage.getItem(STORAGE_KEYS.leaderboard);
+      if (storedLeaderboard) {
+        const parsed = JSON.parse(storedLeaderboard) as LeaderboardState;
+        setLeaderboard(parsed);
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const storedAchievements = window.localStorage.getItem(STORAGE_KEYS.achievements);
+      if (storedAchievements) setAchievementState(JSON.parse(storedAchievements));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem(STORAGE_KEYS.theme, theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history));
+  }, [history]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(favorites));
+  }, [favorites]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.mute, mute ? "true" : "false");
+  }, [mute]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.watchlist, JSON.stringify(watchlist));
+  }, [watchlist]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.leaderboard, JSON.stringify(leaderboard));
+  }, [leaderboard]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.achievements, JSON.stringify(achievementState));
+  }, [achievementState]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let touchStartY = 0;
+    const handleTouchStart = (e: TouchEvent) => {
+      touchStartY = e.touches[0]?.clientY ?? 0;
+    };
+    const handleTouchEnd = (e: TouchEvent) => {
+      const deltaY = (e.changedTouches[0]?.clientY ?? 0) - touchStartY;
+      if (deltaY < -120) {
+        void spin();
+      }
+    };
+    const el = containerRef.current;
+    el.addEventListener("touchstart", handleTouchStart);
+    el.addEventListener("touchend", handleTouchEnd);
+    return () => {
+      el.removeEventListener("touchstart", handleTouchStart);
+      el.removeEventListener("touchend", handleTouchEnd);
+    };
+  });
+
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.scrollTop = termRef.current.scrollHeight;
+  }, [log]);
+
+  const insights = useMemo(() => buildInsights(data, history), [data, history]);
 
   function pushLog(line: LogLine) {
-    setLog((prev) => {
-      const next = [...prev, line].slice(-400);
-      requestAnimationFrame(() => {
-        if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
-      });
+    setLog((prev) => [...prev.slice(-400), line]);
+  }
+
+  function ensureAudioContext() {
+    if (typeof window === "undefined") return null;
+    if (!audioContextRef.current) {
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      audioContextRef.current = Ctx ? new Ctx() : null;
+    }
+    return audioContextRef.current;
+  }
+
+  function playTone(type: "spin" | "rare" | "milestone" | "win") {
+    if (mute) return;
+    const ctx = ensureAudioContext();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    const now = ctx.currentTime;
+
+    if (type === "spin") {
+      osc.frequency.setValueAtTime(220, now);
+      osc.frequency.exponentialRampToValueAtTime(440, now + 0.4);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.2, now + 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+    } else if (type === "rare") {
+      osc.frequency.setValueAtTime(660, now);
+      osc.frequency.exponentialRampToValueAtTime(990, now + 0.3);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.3, now + 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
+    } else if (type === "milestone") {
+      osc.frequency.setValueAtTime(330, now);
+      osc.frequency.setValueAtTime(550, now + 0.2);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.25, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+    } else {
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.setValueAtTime(880, now + 0.15);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.2, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+    }
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.7);
+  }
+
+  function updateConfetti(enabled: boolean) {
+    if (confettiTimeout.current) {
+      window.clearTimeout(confettiTimeout.current);
+      confettiTimeout.current = null;
+    }
+    setConfetti(enabled);
+    if (enabled) {
+      confettiTimeout.current = window.setTimeout(() => setConfetti(false), 1800);
+    }
+  }
+
+  function updateLeaderboard(rare: boolean, newStreak: number, potentialBest: number) {
+    const now = new Date();
+    setLeaderboard((prev) => {
+      const next: LeaderboardState = { ...prev };
+      const dayKey = getDayKey(now);
+      const weekKey = getWeekKey(now);
+      if (next.dailyKey !== dayKey) {
+        next.dailyKey = dayKey;
+        next.dailyTopStreak = 0;
+      }
+      if (next.weeklyKey !== weekKey) {
+        next.weeklyKey = weekKey;
+        next.weeklyTopStreak = 0;
+      }
+      next.totalSpins += 1;
+      if (newStreak > next.dailyTopStreak) next.dailyTopStreak = newStreak;
+      if (newStreak > next.weeklyTopStreak) next.weeklyTopStreak = newStreak;
+      if (rare) next.rareFinds += 1;
+      if (potentialBest > next.bestStreak) next.bestStreak = potentialBest;
       return next;
     });
   }
 
+  function unlockAchievement(id: string) {
+    setAchievementState((prev) => {
+      if (prev[id]) return prev;
+      return { ...prev, [id]: true };
+    });
+  }
   async function spin() {
     if (loading) return;
     try {
       setLoading(true);
-      wheelRef.current?.classList.add("spinning");
-      pushLog({ t: `[${nowHHMMSS()}] 🎰 Spinning…`, type: "info" });
+      wheelRef.current?.classList.remove("animate-spin-fancy");
+      void wheelRef.current?.offsetHeight;
+      wheelRef.current?.classList.add("animate-spin-fancy");
+      playTone("spin");
+      pushLog({ t: `[${new Date().toLocaleTimeString("en-US", { hour12: false })}] 🎰 Spinning…`, type: "info" });
+      const capLow = Math.min(filters.marketCap[0], filters.marketCap[1]);
+      const capHigh = Math.max(filters.marketCap[0], filters.marketCap[1]);
+      const holdersLow = Math.min(filters.holders[0], filters.holders[1]);
+      const holdersHigh = Math.max(filters.holders[0], filters.holders[1]);
 
-      const r = await fetch(`/api/spin?mode=${mode}`, { cache: "no-store" });
-      const j: SpinResp = await r.json();
+      const params = new URLSearchParams({ mode });
+      params.set("marketCapMin", String(capLow));
+      params.set("marketCapMax", String(capHigh));
+      params.set("holdersMin", String(holdersLow));
+      params.set("holdersMax", String(holdersHigh));
+      params.set("volumeMin", String(filters.volumeMin));
 
-      if (!j.ok) {
-        pushLog({ t: `[${nowHHMMSS()}] ⚠ spin failed: ${j.error ?? "unexpected-error"}`, type: "warn" });
-        setData(j);
+      const response = await fetch(`/api/spin?${params.toString()}`, { cache: "no-store" });
+      const payload: SpinResp = await response.json();
+
+      if (!payload.ok || !payload.coin) {
+        pushLog({ t: `⚠ spin failed: ${payload.error ?? "unexpected-error"}`, type: "warn" });
+        setToast("Spin failed. Try again");
+        setTimeout(() => setToast(null), 1800);
         return;
       }
 
-      if (data?.coin) {
-        setPreviousCoin(data.coin);
-      }
-      setData(j);
-      setSpins((s) => s + 1);
+      const entry: SpinEntry = {
+        id: `${payload.coin.address ?? "unknown"}-${Date.now()}`,
+        timestamp: Date.now(),
+        coin: payload.coin,
+        details: payload.details,
+        stats: payload.stats,
+        favorite: favorites.includes(payload.coin.address ?? ""),
+      };
 
-      const c = j.coin!;
+      setData(entry);
+      setSelectedHistoryId(entry.id);
+      setHistory((prev) => [...prev.slice(-(MAX_HISTORY - 1)), entry]);
+      setSpins((prev) => prev + 1);
+      setShowDetailsSheet(true);
 
-      // Check if coin was already spun
-      const isDuplicate = history.includes(c.address || '');
-      if (c.address) {
-        setHistory(prev => [...prev.slice(-19), c.address!]); // Keep last 20
-        if (isDuplicate) {
-          setUniqueStreak(0);
-        } else {
-          setUniqueStreak(prev => {
-            const newStreak = prev + 1;
-            if (newStreak > bestStreak) {
-              setBestStreak(newStreak);
-            }
-            return newStreak;
-          });
-        }
-      }
-
-      const createdDate =
-        c.createdAt != null
-          ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
-          : null;
-
-      // Fun sentiment emoji
-      const sentimentEmoji = j.stats?.sentiment === 'bullish' ? '🚀' :
-        j.stats?.sentiment === 'bearish' ? '📉' : '😐';
-
-      // Rarity detection
-      const holders = toNumber(c.uniqueHolders) ?? 0;
+      const duplicate = history.some((h) => h.coin.address && h.coin.address === entry.coin.address);
+      const holders = toNumber(entry.coin.uniqueHolders) ?? 0;
       const isRare = holders > 0 && holders < 50;
       const isPopular = holders >= 1000;
-      const rarityBadge = isRare ? '💎' : isPopular ? '🔥' : '';
+      const sentimentEmoji = getSentimentEmoji(entry.stats?.sentiment);
+      const rarityBadge = isRare ? "💎" : isPopular ? "🔥" : "";
+      const prospectiveBest = entry.coin.address && !duplicate ? Math.max(bestStreak, uniqueStreak + 1) : bestStreak;
+      const watchlistedHit = entry.coin.address ? Boolean(watchlist[entry.coin.address]) : false;
 
       pushLog({
-        t: `✔ ${sentimentEmoji} ${rarityBadge} ${c.name}${c.symbol ? ` (${c.symbol})` : ""} — cap:${compact(c.marketCap)} vol24h:${compact(c.volume24h)} holders:${compact(c.uniqueHolders)}${isDuplicate ? ' 🔁' : ''}`,
+        t: `✔ ${sentimentEmoji} ${rarityBadge} ${entry.coin.name}${entry.coin.symbol ? ` (${entry.coin.symbol})` : ""} — cap:${compact(entry.coin.marketCap)} vol24h:${compact(entry.coin.volume24h)} holders:${compact(entry.coin.uniqueHolders)}${duplicate ? " 🔁" : ""}`,
         type: "ok",
       });
 
-      if (verbose) {
-        if (c.address) {
-          pushLog({ t: `↳ address: ${shortAddr(c.address)} • link: https://zora.co/coin/${c.address}`, type: "info" });
-        }
-        if (createdDate) {
-          pushLog({
-            t: `↳ created: ${createdDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })} • ${timeAgo(createdDate.getTime())}`,
-            type: "info",
-          });
-        }
-
-        // Stats from API
-        if (j.stats) {
-          const { buyCount, sellCount, sentiment, totalActivity } = j.stats;
-          pushLog({
-            t: `↳ sentiment: ${sentiment} ${sentimentEmoji} • activity: ${totalActivity} • buys: ${buyCount} / sells: ${sellCount}`,
-            type: "info"
-          });
-        }
-
-        const d = j.details;
-        if (d?.swaps && Array.isArray(d.swaps)) {
-          const swaps = d.swaps as SwapUI[];
-          pushLog({ t: `↳ recent swaps: ${swaps.length}`, type: "info" });
-        }
-
-        if (isDuplicate) {
-          pushLog({ t: `↳ 🔁 You've seen this coin before!`, type: "warn" });
-        }
-
-        // Stats from server
-        if (j.stats?.poolSize) {
-          pushLog({
-            t: `↳ pool: ${j.stats.poolSize} • fresh: ${j.stats.freshCoins} • cache: ${j.stats.cacheSize}`,
-            type: "info"
-          });
-        }
-
-        // Rarity info
-        if (isRare) {
-          pushLog({ t: `↳ 💎 RARE GEM! Only ${holders} holders`, type: "ok" });
-        } else if (isPopular) {
-          pushLog({ t: `↳ 🔥 POPULAR! ${compact(holders)} holders`, type: "ok" });
-        }
-
-        // Streak info
-        if (uniqueStreak >= 5) {
-          pushLog({ t: `↳ 🔥 ${uniqueStreak} UNIQUE STREAK!`, type: "ok" });
-        }
+      if (entry.coin.address) {
+        pushLog({ t: `↳ https://zora.co/coin/${entry.coin.address}`, type: "info" });
       }
 
-      // Fun toast messages
-      if (isDuplicate) {
-        setToast("🔁 Déjà vu! Seen this one before");
-        setTimeout(() => setToast(null), 2500);
+      if (entry.stats) {
+        pushLog({
+          t: `↳ sentiment: ${entry.stats.sentiment} ${sentimentEmoji} • buys ${entry.stats.buyCount} / sells ${entry.stats.sellCount}`,
+          type: "info",
+        });
+      }
+
+      if (duplicate) {
+        setToast("🔁 Seen this coin before");
       } else if (isRare) {
-        setToast(`💎 Rare gem found! Only ${holders} holders`);
-        setTimeout(() => setToast(null), 3000);
-      } else if (uniqueStreak > 0 && uniqueStreak % 5 === 0) {
-        setToast(`🔥 ${uniqueStreak} UNIQUE STREAK!`);
-        setTimeout(() => setToast(null), 3000);
-      } else if (j.stats?.sentiment === 'bullish' && j.stats.buyCount >= 7) {
-        setToast("🚀 Bulls are running!");
-        setTimeout(() => setToast(null), 2500);
+        setToast("💎 Rare gem!");
+        updateConfetti(true);
+        playTone("rare");
       } else if (isPopular) {
-        setToast(`🔥 Popular coin! ${compact(holders)} holders`);
-        setTimeout(() => setToast(null), 2500);
+        setToast("🔥 Popular coin spotted");
+        playTone("win");
+      } else if (watchlistedHit) {
+        setToast("🔔 Watchlist hit!");
+      } else {
+        setToast("✅ Fresh spin!");
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      pushLog({ t: `[${nowHHMMSS()}] ⚠ spin failed: ${msg}`, type: "warn" });
+      setTimeout(() => setToast(null), 2400);
+
+      if (entry.coin.address && !duplicate) {
+        const updated = uniqueStreak + 1;
+        setUniqueStreak(updated);
+        if (updated > bestStreak) {
+          setBestStreak(updated);
+        }
+        if (updated && updated % 5 === 0) {
+          playTone("milestone");
+        }
+        updateLeaderboard(isRare, updated, prospectiveBest);
+      } else {
+        setUniqueStreak(0);
+        updateLeaderboard(isRare, 0, prospectiveBest);
+      }
+
+      if (isRare) {
+        unlockAchievement("lucky-rare");
+      }
+      if (spins + 1 === 1) unlockAchievement("first-spin");
+      if (spins + 1 >= 25) unlockAchievement("spins-25");
+      if (prospectiveBest >= 5) unlockAchievement("streak-5");
+      if (prospectiveBest >= 10) unlockAchievement("streak-10");
+
+      const isFavorited = favorites.includes(entry.coin.address ?? "");
+      if (isFavorited) {
+        setHistory((prev) => prev.map((item) => (item.id === entry.id ? { ...item, favorite: true } : item)));
+      }
+    } catch (error) {
+      console.error(error);
+      pushLog({ t: `⚠ spin failed: ${(error as Error).message}`, type: "warn" });
+      setToast("Spin failed");
+      setTimeout(() => setToast(null), 1800);
     } finally {
       setLoading(false);
-      setTimeout(() => wheelRef.current?.classList.remove("spinning"), 350);
     }
   }
 
-  async function share() {
-    const c = data?.coin;
-    if (!c?.address) {
-      setToast("No coin to share.");
-      setTimeout(() => setToast(null), 1200);
-      return;
-    }
-
-    const holders = toNumber(c.uniqueHolders) ?? 0;
-    const isRare = holders > 0 && holders < 50;
-    const isPopular = holders >= 1000;
-    const rarityText = isRare ? '💎 Rare Gem!' : isPopular ? '🔥 Popular!' : '';
-
-    const sentimentEmoji = data?.stats?.sentiment === 'bullish' ? '🚀' :
-      data?.stats?.sentiment === 'bearish' ? '📉' : '😐';
-
-    const shareText = `🎰 Zora Roulette Spin #${spins}
-
-${sentimentEmoji} ${c.name} ${c.symbol ? `($${c.symbol})` : ''}
-${rarityText}
-
-💰 Market Cap: ${compact(c.marketCap)}
-📊 24h Volume: ${compact(c.volume24h)}
-👥 Holders: ${compact(c.uniqueHolders)}
-${uniqueStreak > 0 ? `🔥 Streak: ${uniqueStreak}\n` : ''}
-🔗 https://zora.co/coin/${c.address}
-
-Try it yourself: Zora Roulette`;
-
-    try {
-      await navigator.clipboard.writeText(shareText);
-      setToast("📋 Share text copied!");
-      pushLog({ t: `📋 Copied share text`, type: "info" });
-    } catch {
-      window.alert(shareText);
-      setToast("Share text ready!");
-      pushLog({ t: `📋 Share text ready`, type: "info" });
-    }
-    setTimeout(() => setToast(null), 2000);
+  function handleHistorySelect(entry: SpinEntry) {
+    setData(entry);
+    setSelectedHistoryId(entry.id);
+    setShowDetailsSheet(true);
   }
 
-  const c = data?.coin ?? null;
-  const createdDate =
-    c?.createdAt != null
-      ? new Date(typeof c.createdAt === "number" ? c.createdAt : Date.parse(String(c.createdAt)))
-      : null;
-
-  // Swaps data from API (already processed)
-  const swapsTop10: SwapUI[] = Array.isArray(data?.details?.swaps)
-    ? (data.details.swaps as SwapUI[]).slice(0, 10)
-    : [];
-
-  const holdersTop10: HolderRow[] = holdersArray(data?.details?.holders).slice(0, 10);
-
-  // If API already provided percentages, use them
-  const hasApiPercentages = holdersTop10.length > 0 && holdersTop10[0]?.percentage != null;
-
-  // Calculate percentages if not provided by API
-  const holdersTotal = hasApiPercentages ? 0 : holdersTop10.reduce((acc, h) => {
-    const n = toNumber(h.balance);
-    return acc + (n ?? 0);
-  }, 0);
-
-  const holdersPercentages = hasApiPercentages
-    ? holdersTop10.map(h => h.percentage ?? 0)
-    : holdersTop10.map((h) => {
-      const n = toNumber(h.balance) ?? 0;
-      const p = holdersTotal > 0 ? (n / holdersTotal) * 100 : 0;
-      return Math.max(0, Math.min(100, p));
+  function toggleFavorite(entry: SpinEntry) {
+    const address = entry.coin.address ?? "";
+    if (!address) return;
+    setFavorites((prev) => {
+      const exists = prev.includes(address);
+      return exists ? prev.filter((f) => f !== address) : [...prev, address];
     });
+    setHistory((prev) => prev.map((item) => (item.id === entry.id ? { ...item, favorite: !item.favorite } : item)));
+  }
 
+  function toggleWatchlistEntry(coin: Coin) {
+    const address = coin.address;
+    if (!address) return;
+    setWatchlist((prev) => {
+      const next = { ...prev };
+      if (next[address]) {
+        delete next[address];
+      } else {
+        next[address] = coin;
+      }
+      return next;
+    });
+  }
+
+  function shareOnX(entry: SpinEntry | null) {
+    if (!entry?.coin.address) return;
+    const sentimentEmoji = getSentimentEmoji(entry.stats?.sentiment);
+    const text = `Just found ${entry.coin.name}${entry.coin.symbol ? ` (${entry.coin.symbol})` : ""} on @zora 🎰 ${sentimentEmoji} Streak: ${uniqueStreak}`;
+    const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(`https://zora.co/coin/${entry.coin.address}`)}`;
+    window.open(url, "_blank");
+    unlockAchievement("share");
+  }
+
+  async function copyShareSummary(entry: SpinEntry | null) {
+    if (!entry) return;
+    const summary = `🎰 Zora Roulette Spin #${spins}\n${entry.coin.name} ${entry.coin.symbol ? `($${entry.coin.symbol})` : ""}\nMarket cap: ${compact(entry.coin.marketCap)}\n24h Volume: ${compact(entry.coin.volume24h)}\nHolders: ${compact(entry.coin.uniqueHolders)}\nStreak: ${uniqueStreak}`;
+    try {
+      await navigator.clipboard.writeText(summary);
+      setToast("Copied session summary!");
+    } catch {
+      setToast("Clipboard unavailable");
+    }
+    setTimeout(() => setToast(null), 1600);
+  }
+
+  async function generateScreenshot() {
+    if (typeof window === "undefined") return;
+    const element = containerRef.current;
+    if (!element) return;
+    try {
+      if (!(window as unknown as { html2canvas?: unknown }).html2canvas) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js";
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("Failed to load html2canvas"));
+          document.body.appendChild(script);
+        });
+      }
+      const html2canvasGlobal = (window as unknown as {
+        html2canvas?: (element: HTMLElement, options?: Record<string, unknown>) => Promise<HTMLCanvasElement>;
+      }).html2canvas;
+      if (!html2canvasGlobal) {
+        throw new Error("html2canvas unavailable");
+      }
+      const canvas = await html2canvasGlobal(element, {
+        backgroundColor: theme === "dark" ? "#09090b" : "#fafafa",
+      });
+      const link = document.createElement("a");
+      link.href = canvas.toDataURL("image/png");
+      link.download = `zora-roulette-${Date.now()}.png`;
+      link.click();
+      setToast("📸 Screenshot saved");
+    } catch {
+      setToast("Screenshot failed. Try desktop browser.");
+    }
+    setTimeout(() => setToast(null), 1800);
+  }
+
+  function startSessionReplay() {
+    if (!history.length) return;
+    setSessionReplaying(true);
+    replayIndex.current = 0;
+    const playNext = () => {
+      const entry = history[replayIndex.current];
+      if (!entry) {
+        setSessionReplaying(false);
+        return;
+      }
+      setData(entry);
+      setSelectedHistoryId(entry.id);
+      replayIndex.current += 1;
+      replayTimeout.current = window.setTimeout(playNext, 1500);
+    };
+    playNext();
+  }
+
+  function stopSessionReplay() {
+    setSessionReplaying(false);
+    if (replayTimeout.current) {
+      window.clearTimeout(replayTimeout.current);
+      replayTimeout.current = null;
+    }
+  }
+
+  useEffect(() => () => {
+    if (confettiTimeout.current) window.clearTimeout(confettiTimeout.current);
+    if (replayTimeout.current) window.clearTimeout(replayTimeout.current);
+  }, []);
+
+  const comparisonCoins = useMemo(() => history.slice(-3).reverse(), [history]);
+  const holdersTop10: HolderRow[] = useMemo(() => holdersArray(data?.details?.holders).slice(0, 10), [data]);
+  const swapsTop10: SwapUI[] = useMemo(
+    () =>
+      Array.isArray(data?.details?.swaps)
+        ? (data?.details?.swaps as SwapUI[]).slice(0, 10)
+        : [],
+    [data]
+  );
+  const commentsTop: CommentUI[] = useMemo(
+    () =>
+      Array.isArray(data?.details?.comments)
+        ? (data?.details?.comments as CommentUI[]).slice(0, 6)
+        : [],
+    [data]
+  );
+
+  const currentAddress = data?.coin.address ?? "";
+  const inWatchlist = currentAddress ? Boolean(watchlist[currentAddress]) : false;
   return (
-    <main className="screen">
-      {/* Header */}
-      <header className="header">
-        <h1 className="title">
-          <span className="emoji">🎰</span> Zora Roulette — Web
-        </h1>
-        <p className="subtitle">Live coin picker with Zora GraphQL • not financial advice</p>
-      </header>
-
-      {/* Roulette */}
-      <section className="roulette">
-        <div ref={wheelRef} className="wheel">
-          <div className="ring" />
-          <div className="center">
-            <div className="center-copy">
-              <div className="mode-label">Mode</div>
-              <div className="mode-value">
-                {mode === 'volume' && '📊 Volume'}
-                {mode === 'trending' && '🔥 Trending'}
-                {mode === 'new' && '✨ New'}
-              </div>
-              <div className="spins">spins: {spins}</div>
-              {uniqueStreak >= 5 && (
-                <div className="streak">🔥 {uniqueStreak}</div>
-              )}
-            </div>
-          </div>
-          <div className="pointer" />
-        </div>
-      </section>
-
-      {/* Stats Bar */}
-      {(uniqueStreak > 0 || bestStreak > 0 || spins > 0) && (
-        <section className="stats-bar">
-          <div className="stat-item">
-            <span className="stat-label">Total Spins</span>
-            <span className="stat-value">{spins}</span>
-          </div>
-          <div className="stat-item highlight">
-            <span className="stat-label">Current Streak</span>
-            <span className="stat-value">{uniqueStreak} {uniqueStreak >= 5 ? '🔥' : ''}</span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-label">Best Streak</span>
-            <span className="stat-value">{bestStreak} {bestStreak >= 10 ? '🏆' : ''}</span>
-          </div>
-        </section>
-      )}
-
-      {/* Mode Selector */}
-      <section className="mode-selector">
-        <button
-          onClick={() => setMode('volume')}
-          className={`mode-btn ${mode === 'volume' ? 'active' : ''}`}
-          disabled={loading}
-        >
-          📊 Volume
-        </button>
-        <button
-          onClick={() => setMode('trending')}
-          className={`mode-btn ${mode === 'trending' ? 'active' : ''}`}
-          disabled={loading}
-        >
-          🔥 Trending
-        </button>
-        <button
-          onClick={() => setMode('new')}
-          className={`mode-btn ${mode === 'new' ? 'active' : ''}`}
-          disabled={loading}
-        >
-          ✨ New
-        </button>
-      </section>
-
-      {/* Actions */}
-      <section className="toolbar">
-        <div className="actions">
-          <button onClick={spin} disabled={loading} className={`btn primary ${loading ? "busy" : ""}`}>
-            {loading ? "🎰 Spinning..." : "🎲 Spin the Wheel"}
-          </button>
-          <button onClick={share} className="btn secondary" disabled={!c}>
-            📤 Share
-          </button>
-        </div>
-
-        <div className="toggles">
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={verbose}
-              onChange={(e) => setVerbose(e.target.checked)}
-            />
-            <span>Verbose log</span>
-          </label>
-          <button
-            className="btn ghost"
-            onClick={() => setLog([{ t: "🧹 Log cleared.", type: "info" }])}
-          >
-            Clear log
-          </button>
-          <button
-            className="btn ghost"
-            onClick={() => {
-              setUniqueStreak(0);
-              setBestStreak(0);
-              setSpins(0);
-              setHistory([]);
-              setData(null);
-              setLog([{ t: "🔄 Stats reset. Ready for a new session!", type: "info" }]);
-            }}
-          >
-            Reset Stats
-          </button>
-        </div>
-      </section>
-
-      {/* Error */}
-      {data && !data.ok && (
-        <div className="error">Error: {data.error}</div>
-      )}
-
-      {/* Comparison */}
-      {c && previousCoin && (
-        <section className="comparison">
-          <div className="comparison-title">📊 vs Previous Spin</div>
-          <div className="comparison-grid">
-            <div className="comparison-item">
-              <span className="comparison-label">Market Cap</span>
-              <span className={`comparison-value ${(toNumber(c.marketCap) ?? 0) > (toNumber(previousCoin.marketCap) ?? 0) ? 'up' : 'down'}`}>
-                {(toNumber(c.marketCap) ?? 0) > (toNumber(previousCoin.marketCap) ?? 0) ? '📈 Higher' : '📉 Lower'}
-              </span>
-            </div>
-            <div className="comparison-item">
-              <span className="comparison-label">Volume</span>
-              <span className={`comparison-value ${(toNumber(c.volume24h) ?? 0) > (toNumber(previousCoin.volume24h) ?? 0) ? 'up' : 'down'}`}>
-                {(toNumber(c.volume24h) ?? 0) > (toNumber(previousCoin.volume24h) ?? 0) ? '📈 Higher' : '📉 Lower'}
-              </span>
-            </div>
-            <div className="comparison-item">
-              <span className="comparison-label">Holders</span>
-              <span className={`comparison-value ${(toNumber(c.uniqueHolders) ?? 0) > (toNumber(previousCoin.uniqueHolders) ?? 0) ? 'up' : 'down'}`}>
-                {(toNumber(c.uniqueHolders) ?? 0) > (toNumber(previousCoin.uniqueHolders) ?? 0) ? '📈 More' : '📉 Less'}
-              </span>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Coin Card */}
-      {c && (
-        <section className="card">
-          <div className="card-row">
-            <div>
-              <div className="coin-name">
-                {c.name} {c.symbol ? <span className="symbol">({c.symbol})</span> : null}
-                {data?.stats && (
-                  <span className={`sentiment-badge ${data.stats.sentiment}`}>
-                    {data.stats.sentiment === 'bullish' ? '🚀 Bullish' :
-                      data.stats.sentiment === 'bearish' ? '📉 Bearish' :
-                        '😐 Neutral'}
-                  </span>
-                )}
-                {(() => {
-                  const holders = toNumber(c.uniqueHolders) ?? 0;
-                  if (holders > 0 && holders < 50) {
-                    return <span className="rarity-badge rare">💎 Rare</span>;
-                  }
-                  if (holders >= 1000) {
-                    return <span className="rarity-badge popular">🔥 Popular</span>;
-                  }
-                  return null;
-                })()}
-              </div>
-              <div className="address">{c.address ? `0x${c.address.replace(/^0x/, "")}` : ""}</div>
-            </div>
-            <a
-              href={c.address ? `https://zora.co/coin/${c.address}` : "https://zora.co/coins"}
-              target="_blank"
-              rel="noreferrer"
-              className="link"
+    <main
+      ref={containerRef}
+      className={`min-h-screen transition-colors duration-500 ${
+        theme === "dark" ? "bg-zinc-950 text-zinc-100" : "bg-zinc-100 text-zinc-900"
+      }`}
+    >
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 lg:grid lg:grid-cols-[280px_minmax(0,1fr)_320px]">
+        {/* History sidebar */}
+        <aside className="rounded-2xl border border-zinc-800/50 bg-black/20 p-4 shadow-lg backdrop-blur lg:sticky lg:top-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Recent Spins</h2>
+            <button
+              onClick={() => {
+                setFavorites([]);
+                setHistory((prev) => prev.map((item) => ({ ...item, favorite: false })));
+              }}
+              className="text-xs text-zinc-400 hover:text-zinc-200"
             >
-              View on Zora →
-            </a>
+              Clear ⭐
+            </button>
           </div>
-
-          <div className="grid">
-            <div className="metric">
-              <div className="label">Market Cap</div>
-              <div className="value cyan">{compact(c.marketCap)}</div>
-            </div>
-            <div className="metric">
-              <div className="label">24h Volume</div>
-              <div className="value pink">{compact(c.volume24h)}</div>
-            </div>
-            <div className="metric">
-              <div className="label">Holders</div>
-              <div className="value yellow">{compact(c.uniqueHolders)}</div>
-            </div>
-            <div className="metric">
-              <div className="label">24h Cap Δ</div>
-              <div
-                className={`value ${Number(c.marketCapDelta24h ?? c.change24h) > 0 ? "green" : "red"}`}
-              >
-                {pct(Number(c.marketCapDelta24h ?? c.change24h))}
-              </div>
-            </div>
-          </div>
-
-          {createdDate && (
-            <div className="created">
-              Created:{" "}
-              {createdDate.toLocaleDateString("en-US", {
-                day: "2-digit",
-                month: "short",
-                year: "numeric",
-              })}
-              {" • "}
-              {timeAgo(createdDate.getTime())}
-            </div>
-          )}
-
-          {data?.stats && (
-            <div className="activity-stats">
-              <span>📊 Activity: {data.stats.totalActivity}</span>
-              <span>↑ Buys: {data.stats.buyCount}</span>
-              <span>↓ Sells: {data.stats.sellCount}</span>
-              {data.stats.poolSize && (
-                <>
-                  <span>🎰 Pool: {data.stats.poolSize}</span>
-                  <span>✨ Fresh: {data.stats.freshCoins}</span>
-                </>
-              )}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* Swaps Top 10 */}
-      {swapsTop10.length > 0 && (
-        <section className="panel">
-          <div className="panel-head">Recent Swaps — Top 10</div>
-          <div className="table">
-            <div className="row head">
-              <div className="cell idx">#</div>
-              <div className="cell side">SIDE</div>
-              <div className="cell amt">AMOUNT</div>
-              <div className="cell addr">ADDRESS</div>
-              <div className="cell date">DATE</div>
-              <div className="cell time">TIME</div>
-            </div>
-            {swapsTop10.map((s, i) => {
-              const side = (s.side ?? "BUY") === "BUY" ? "BUY" : "SELL";
-              const sideClass = side === "BUY" ? "buy" : "sell";
+          <div className="space-y-3">
+            {history.length === 0 && <p className="text-sm text-zinc-400">Spin the wheel to populate history.</p>}
+            {history.map((entry) => {
+              const isSelected = selectedHistoryId === entry.id;
+              const rare = (toNumber(entry.coin.uniqueHolders) ?? 0) < 50 && (toNumber(entry.coin.uniqueHolders) ?? 0) > 0;
+              const watchlisted = entry.coin.address ? Boolean(watchlist[entry.coin.address]) : false;
               return (
-                <div className="row" key={`swap-${i}`}>
-                  <div className="cell idx">{i + 1}.</div>
-                  <div className={`cell side tag ${sideClass}`}>
-                    {side === "BUY" ? "▲ BUY" : "▼ SELL"}
+                <div
+                  key={entry.id}
+                  className={`group rounded-xl border p-3 transition-colors ${
+                    isSelected ? "border-emerald-400/80 bg-emerald-500/10" : "border-zinc-800/60 bg-black/10 hover:border-zinc-600"
+                  }`}
+                >
+                  <button
+                    className="flex w-full items-start gap-3 text-left"
+                    onClick={() => handleHistorySelect(entry)}
+                  >
+                    <span className="mt-1 text-xl">{rare ? "💎" : "🪙"}</span>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-semibold">{entry.coin.name}</div>
+                        <div className="text-xs text-zinc-400">{timeAgo(entry.timestamp)}</div>
+                      </div>
+                      <div className="text-xs text-zinc-400 flex items-center gap-2">
+                        <span>
+                          {compact(entry.coin.marketCap)} cap • {compact(entry.coin.volume24h)} vol
+                        </span>
+                        {watchlisted && <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-200">Watchlist</span>}
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 text-xs">
+                        <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] uppercase tracking-wide">
+                          {entry.stats?.sentiment ?? "neutral"}
+                        </span>
+                        {entry.coin.symbol && <span className="text-zinc-400">{entry.coin.symbol}</span>}
+                      </div>
+                    </div>
+                  </button>
+                  <div className="mt-2 flex items-center justify-between text-xs text-zinc-400">
+                    <button
+                      onClick={() => toggleFavorite(entry)}
+                      className={`transition ${entry.favorite ? "text-yellow-300" : "hover:text-yellow-200"}`}
+                    >
+                      {entry.favorite ? "⭐ Favorited" : "☆ Favorite"}
+                    </button>
+                    <button onClick={() => shareOnX(entry)} className="hover:text-sky-400">
+                      Share on X
+                    </button>
                   </div>
-                  <div className="cell amt">{compact(s.amount)}</div>
-                  <div className="cell addr">{s.address || "—"}</div>
-                  <div className="cell date">{s.date || "—"}</div>
-                  <div className="cell time">{s.time || "—"}</div>
                 </div>
               );
             })}
           </div>
-        </section>
-      )}
-
-      {/* Holders Top 10 – Simplified Visualization */}
-      {holdersTop10.length > 0 && (
-        <section className="panel">
-          <div className="panel-head">
-            👑 Top 10 Holders
+          <div className="mt-4 flex items-center justify-between rounded-lg border border-zinc-800/70 bg-black/30 p-3 text-xs text-zinc-400">
+            <span>Mute sound</span>
+            <button
+              onClick={() => setMute((m) => !m)}
+              className={`rounded-full px-3 py-1 text-sm font-semibold transition ${
+                mute ? "bg-zinc-700 text-zinc-200" : "bg-emerald-500/20 text-emerald-300"
+              }`}
+            >
+              {mute ? "Off" : "On"}
+            </button>
           </div>
-          <div className="bars">
-            {holdersTop10.map((h, i) => {
-              const label = shortAddr(h.ens ?? h.holder ?? h.owner);
-              const p = holdersPercentages[i] ?? 0;
-              const bal = compact(toNumber(h.balance));
-              const isTop = h.isTopHolder || i === 0;
-              return (
-                <div className={`bar-row ${isTop ? 'top-holder' : ''}`} key={`h-${i}`}>
-                  <div className="bar-label">
-                    <span className="rank">{h.rank ?? (i + 1)}.</span>
-                    {isTop && <span className="crown">👑</span>}
-                    <span className="addr">{label}</span>
+        </aside>
+
+        <section className="space-y-6">
+          <header className="rounded-3xl border border-zinc-800/60 bg-gradient-to-br from-zinc-900/80 via-black/60 to-emerald-900/20 p-6 shadow-xl">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h1 className="text-3xl font-bold tracking-tight">🎰 Zora Roulette</h1>
+                <p className="text-sm text-zinc-400">Spin the wheel, explore coins, track streaks and share with frens.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                  className="rounded-full border border-zinc-700/70 bg-black/30 px-4 py-2 text-sm text-zinc-300 transition hover:border-emerald-400/60"
+                >
+                  {theme === "dark" ? "🌞 Light" : "🌚 Dark"}
+                </button>
+                <button
+                  onClick={() => copyShareSummary(data)}
+                  className="rounded-full border border-zinc-700/70 bg-black/40 px-4 py-2 text-sm text-zinc-300 transition hover:border-sky-400/60"
+                >
+                  📋 Copy Summary
+                </button>
+                <button
+                  onClick={generateScreenshot}
+                  className="rounded-full border border-zinc-700/70 bg-black/40 px-4 py-2 text-sm text-zinc-300 transition hover:border-purple-400/60"
+                >
+                  📸 Screenshot
+                </button>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+              <div className="rounded-2xl border border-zinc-800/70 bg-black/30 p-3">
+                <div className="text-xs uppercase text-zinc-500">Spins</div>
+                <div className="text-2xl font-semibold">{spins}</div>
+              </div>
+              <div className="rounded-2xl border border-zinc-800/70 bg-black/30 p-3">
+                <div className="text-xs uppercase text-zinc-500">Unique Streak</div>
+                <div className="text-2xl font-semibold">{uniqueStreak}</div>
+              </div>
+              <div className="rounded-2xl border border-zinc-800/70 bg-black/30 p-3">
+                <div className="text-xs uppercase text-zinc-500">Best Streak</div>
+                <div className="text-2xl font-semibold">{bestStreak}</div>
+              </div>
+              <div className="rounded-2xl border border-zinc-800/70 bg-black/30 p-3">
+                <div className="text-xs uppercase text-zinc-500">Rare finds</div>
+                <div className="text-2xl font-semibold">{leaderboard.rareFinds}</div>
+              </div>
+            </div>
+          </header>
+
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="space-y-6">
+              <div className="relative flex flex-col items-center justify-center rounded-3xl border border-zinc-800/60 bg-black/30 p-6 shadow-lg">
+                <div ref={wheelRef} className="roulette-wheel">
+                  <div className="roulette-core">
+                    <div className="text-xs uppercase tracking-[0.2em] text-zinc-400">Mode</div>
+                    <div className="text-xl font-semibold text-emerald-300">
+                      {mode === "volume" && "📊 Volume"}
+                      {mode === "trending" && "🔥 Trending"}
+                      {mode === "new" && "✨ New"}
+                    </div>
+                    <div className="mt-2 text-xs text-zinc-400">Spins: {spins}</div>
+                    {uniqueStreak >= 5 && (
+                      <div className="mt-1 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-semibold text-emerald-200">
+                        🔥 Streak {uniqueStreak}
+                      </div>
+                    )}
                   </div>
-                  <div className="bar-track" aria-label={`${label} ${p.toFixed(1)}%`}>
-                    <div
-                      className="bar-fill"
-                      style={{ width: `${p}%` }}
-                      data-percentage={p.toFixed(1)}
-                    />
-                    <div className="bar-stats">
-                      <span className="bar-balance">{bal}</span>
-                      <span className="bar-percentage">{p.toFixed(1)}%</span>
+                  <div className="roulette-pointer" />
+                </div>
+                <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                  {(["volume", "trending", "new"] as Mode[]).map((value) => (
+                    <button
+                      key={value}
+                      onClick={() => setMode(value)}
+                      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                        mode === value ? "bg-emerald-500 text-emerald-950" : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                      }`}
+                    >
+                      {value === "volume" && "📊 Volume"}
+                      {value === "trending" && "🔥 Trending"}
+                      {value === "new" && "✨ New"}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    onClick={spin}
+                    disabled={loading}
+                    className={`rounded-full px-6 py-3 text-base font-semibold transition ${
+                      loading ? "bg-emerald-400/40 text-emerald-200" : "bg-emerald-500 text-emerald-950 hover:bg-emerald-400"
+                    }`}
+                  >
+                    {loading ? "Spinning…" : "Spin"}
+                  </button>
+                  <button
+                    onClick={() => shareOnX(data)}
+                    className="rounded-full border border-sky-500/50 px-5 py-2 text-sm text-sky-300 transition hover:bg-sky-500/20"
+                  >
+                    Share on X (Twitter)
+                  </button>
+                  <button
+                    onClick={sessionReplaying ? stopSessionReplay : startSessionReplay}
+                    className="rounded-full border border-zinc-700/70 px-5 py-2 text-sm text-zinc-300 transition hover:border-purple-400/60"
+                  >
+                    {sessionReplaying ? "Stop Replay" : "Replay Session"}
+                  </button>
+                </div>
+              </div>
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Advanced Filters</h2>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="text-xs uppercase text-zinc-500">Market Cap Range</label>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-zinc-400">
+                      <span>${compact(filters.marketCap[0])}</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1_000_000_000}
+                        step={1_000_000}
+                        value={filters.marketCap[0]}
+                        onChange={(e) =>
+                          setFilters((prev) => ({ ...prev, marketCap: [Number(e.target.value), prev.marketCap[1]] }))
+                        }
+                        className="flex-1"
+                      />
+                      <input
+                        type="range"
+                        min={0}
+                        max={1_000_000_000}
+                        step={1_000_000}
+                        value={filters.marketCap[1]}
+                        onChange={(e) =>
+                          setFilters((prev) => ({ ...prev, marketCap: [prev.marketCap[0], Number(e.target.value)] }))
+                        }
+                        className="flex-1"
+                      />
+                      <span>${compact(filters.marketCap[1])}</span>
                     </div>
                   </div>
+                  <div>
+                    <label className="text-xs uppercase text-zinc-500">Holder Count</label>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-zinc-400">
+                      <input
+                        type="number"
+                        value={filters.holders[0]}
+                        onChange={(e) => setFilters((prev) => ({ ...prev, holders: [Number(e.target.value), prev.holders[1]] }))}
+                        className="w-20 rounded border border-zinc-700 bg-black/30 px-2 py-1"
+                      />
+                      <span>to</span>
+                      <input
+                        type="number"
+                        value={filters.holders[1]}
+                        onChange={(e) => setFilters((prev) => ({ ...prev, holders: [prev.holders[0], Number(e.target.value)] }))}
+                        className="w-20 rounded border border-zinc-700 bg-black/30 px-2 py-1"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs uppercase text-zinc-500">Volume Threshold</label>
+                    <input
+                      type="number"
+                      value={filters.volumeMin}
+                      onChange={(e) => setFilters((prev) => ({ ...prev, volumeMin: Number(e.target.value) }))}
+                      className="mt-2 w-full rounded border border-zinc-700 bg-black/30 px-2 py-1 text-sm"
+                    />
+                  </div>
                 </div>
-              );
-            })}
-          </div>
-          <div className="panel-foot">
-            💡 Distribution based on top 10 holders only
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold">Coin Comparison</h2>
+                  <span className="text-xs text-zinc-400">Last {comparisonCoins.length} spins</span>
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
+                  {comparisonCoins.map((entry) => (
+                    <div key={entry.id} className="rounded-2xl border border-zinc-800/70 bg-black/20 p-4 text-sm">
+                      <div className="flex items-center justify-between text-xs text-zinc-400">
+                        <span>{timeAgo(entry.timestamp)}</span>
+                        <span>{entry.coin.symbol}</span>
+                      </div>
+                      <div className="mt-2 text-base font-semibold">{entry.coin.name}</div>
+                      <div className="mt-3 space-y-2 text-xs text-zinc-400">
+                        <div>Cap: {compact(entry.coin.marketCap)}</div>
+                        <div>Vol: {compact(entry.coin.volume24h)}</div>
+                        <div>Holders: {compact(entry.coin.uniqueHolders)}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {!comparisonCoins.length && <p className="text-sm text-zinc-400">Spin a few times to compare coins.</p>}
+                </div>
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">AI Insights</h2>
+                <div className="mt-3 space-y-2 text-sm text-zinc-300">
+                  {insights.map((insight, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      <span>🤖</span>
+                      <p>{insight}</p>
+                    </div>
+                  ))}
+                  {!insights.length && <p className="text-sm text-zinc-400">Spin to unlock insights.</p>}
+                </div>
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold">Terminal Log</h2>
+                  <button
+                    onClick={() => setLog([{ t: "🧹 Log cleared.", type: "info" }])}
+                    className="text-xs text-zinc-400 hover:text-zinc-200"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div ref={termRef} className="mt-4 h-56 overflow-y-auto rounded-2xl border border-zinc-800/70 bg-black/50 p-3 text-xs">
+                  <div className="space-y-1 font-mono">
+                    {log.map((line, idx) => (
+                      <div
+                        key={idx}
+                        className={
+                          line.type === "warn" ? "text-amber-300" : line.type === "ok" ? "text-emerald-300" : "text-zinc-400"
+                        }
+                      >
+                        {line.t}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <aside className="space-y-6">
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Coin Details</h2>
+                {data ? (
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="text-base font-semibold">{data.coin.name}</div>
+                      <button
+                        onClick={() => toggleWatchlistEntry(data.coin)}
+                        className={`text-xs ${inWatchlist ? "text-emerald-300" : "text-zinc-400 hover:text-emerald-300"}`}
+                      >
+                        {inWatchlist ? "In Watchlist" : "Add to Watchlist"}
+                      </button>
+                    </div>
+                    {data.coin.symbol && <div className="text-xs uppercase text-zinc-400">{data.coin.symbol}</div>}
+                    {data.coin.address && (
+                      <a
+                        className="text-xs text-sky-400 hover:underline"
+                        href={`https://zora.co/coin/${data.coin.address}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View on Zora ↗
+                      </a>
+                    )}
+                    <div className="grid grid-cols-2 gap-3 text-xs text-zinc-400">
+                      <div>
+                        <div className="text-[11px] uppercase">Market Cap</div>
+                        <div className="text-sm text-zinc-200">{compact(data.coin.marketCap)}</div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] uppercase">24h Volume</div>
+                        <div className="text-sm text-zinc-200">{compact(data.coin.volume24h)}</div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] uppercase">Holders</div>
+                        <div className="text-sm text-zinc-200">{compact(data.coin.uniqueHolders)}</div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] uppercase">24h Change</div>
+                        <div className={`text-sm ${data.coin.change24h && data.coin.change24h > 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                          {pct(data.coin.change24h)}
+                        </div>
+                      </div>
+                    </div>
+                    {data.stats && (
+                      <div className="rounded-2xl border border-zinc-800/60 bg-black/40 p-3 text-xs text-zinc-300">
+                        <div>Sentiment: {data.stats.sentiment} {getSentimentEmoji(data.stats.sentiment)}</div>
+                        <div>Activity: {data.stats.totalActivity} • Buys {data.stats.buyCount} / Sells {data.stats.sellCount}</div>
+                      </div>
+                    )}
+                    <div className="rounded-2xl border border-zinc-800/60 bg-black/40 p-3 text-xs text-zinc-300">
+                      <div className="text-[11px] uppercase text-zinc-500">AI Prediction</div>
+                      <div>
+                        {data.stats?.sentiment === "bullish"
+                          ? "Momentum building — expect buyers to defend dips."
+                          : data.stats?.sentiment === "bearish"
+                          ? "Supply heavy — watch for capitulation before jumping in."
+                          : "Neutral chop — wait for the next catalyst."}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-4 text-sm text-zinc-400">Spin the wheel to load coin data.</p>
+                )}
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Watchlist</h2>
+                <div className="mt-3 space-y-2 text-sm text-zinc-300">
+                  {Object.values(watchlist).map((coin) => (
+                    <div key={coin.address} className="flex items-center justify-between rounded-xl border border-zinc-800/60 bg-black/20 p-3">
+                      <div>
+                        <div className="font-semibold">{coin.name}</div>
+                        <div className="text-xs text-zinc-400">{coin.symbol}</div>
+                      </div>
+                      <button onClick={() => toggleWatchlistEntry(coin)} className="text-xs text-rose-300">
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  {!Object.keys(watchlist).length && <p className="text-xs text-zinc-500">Add coins to your watchlist from the details panel.</p>}
+                </div>
+              </section>
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Leaderboard</h2>
+                <div className="mt-3 space-y-2 text-sm text-zinc-300">
+                  <div className="rounded-2xl border border-zinc-800/60 bg-black/30 p-3">
+                    <div className="text-xs uppercase text-zinc-500">Daily Top Streak</div>
+                    <div className="text-lg font-semibold text-emerald-300">{leaderboard.dailyTopStreak}</div>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-800/60 bg-black/30 p-3">
+                    <div className="text-xs uppercase text-zinc-500">Weekly Top Streak</div>
+                    <div className="text-lg font-semibold text-emerald-300">{leaderboard.weeklyTopStreak}</div>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-800/60 bg-black/30 p-3">
+                    <div className="text-xs uppercase text-zinc-500">Total Spins</div>
+                    <div className="text-lg font-semibold">{leaderboard.totalSpins}</div>
+                  </div>
+                  <button
+                    onClick={() => shareOnX(data)}
+                    className="w-full rounded-full border border-sky-500/50 px-4 py-2 text-xs text-sky-300 transition hover:bg-sky-500/20"
+                  >
+                    Share streak to X
+                  </button>
+                </div>
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Achievements</h2>
+                <div className="mt-3 space-y-2 text-sm text-zinc-300">
+                  {ACHIEVEMENT_DEFS.map((ach) => {
+                    const unlocked = achievementState[ach.id];
+                    return (
+                      <div
+                        key={ach.id}
+                        className={`flex items-start gap-3 rounded-2xl border border-zinc-800/60 p-3 ${
+                          unlocked ? "bg-emerald-500/10 text-emerald-200" : "bg-black/30 text-zinc-400"
+                        }`}
+                      >
+                        <div className="text-xl">{ach.icon}</div>
+                        <div>
+                          <div className="text-sm font-semibold">{ach.label}</div>
+                          <div className="text-xs">{ach.description}</div>
+                        </div>
+                        <div className="ml-auto text-xs">{unlocked ? "Unlocked" : "Locked"}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Recent Swaps</h2>
+                <div className="mt-3 space-y-2 text-xs text-zinc-300">
+                  {swapsTop10.map((swap, idx) => (
+                    <div key={idx} className="flex items-center justify-between rounded-xl border border-zinc-800/60 bg-black/20 p-3">
+                      <div>
+                        <div className="text-sm font-semibold">{swap.side}</div>
+                        <div className="text-xs text-zinc-400">{swap.date} • {swap.time}</div>
+                      </div>
+                      <div className="text-right text-sm">
+                        <div>{swap.amount}</div>
+                        <div className="text-xs text-zinc-500">{swap.address}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {!swapsTop10.length && <p className="text-xs text-zinc-500">No swaps logged yet.</p>}
+                </div>
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Top Holders</h2>
+                <div className="mt-3 space-y-2 text-xs text-zinc-300">
+                  {holdersTop10.map((holder) => (
+                    <div key={holder.rank} className="flex items-center justify-between rounded-xl border border-zinc-800/60 bg-black/20 p-3">
+                      <div>
+                        <div className="text-sm font-semibold">#{holder.rank} {holder.holder}</div>
+                        <div className="text-xs text-zinc-500">{holder.percentage?.toFixed(1)}%</div>
+                      </div>
+                      <div className="text-sm">{compact(holder.balance)}</div>
+                    </div>
+                  ))}
+                  {!holdersTop10.length && <p className="text-xs text-zinc-500">No holder data yet.</p>}
+                </div>
+              </section>
+
+              <section className="rounded-3xl border border-zinc-800/60 bg-black/30 p-6">
+                <h2 className="text-lg font-semibold">Community Sentiment</h2>
+                <div className="mt-3 space-y-2 text-xs text-zinc-300">
+                  {commentsTop.map((comment, idx) => (
+                    <div key={idx} className="rounded-xl border border-zinc-800/60 bg-black/20 p-3">
+                      <div className="text-sm font-semibold">{comment.author ?? comment.user ?? "anon"}</div>
+                      <div className="text-xs text-zinc-400">{comment.date ?? comment.ts ?? ""}</div>
+                      <p className="mt-1 text-sm">{comment.text}</p>
+                    </div>
+                  ))}
+                  {!commentsTop.length && <p className="text-xs text-zinc-500">Spin again to fetch commentary.</p>}
+                </div>
+              </section>
+            </aside>
           </div>
         </section>
+
+        <aside className="hidden flex-col gap-4 rounded-2xl border border-zinc-800/60 bg-black/30 p-4 text-sm text-zinc-300 lg:flex">
+          <div>
+            <h2 className="text-lg font-semibold">Gamification</h2>
+            <p className="text-xs text-zinc-500">Daily bonus resets every 24h. Spin daily for extra streak multipliers.</p>
+          </div>
+          <div className="rounded-xl border border-zinc-800/60 bg-black/40 p-3">
+            <div className="text-xs uppercase text-zinc-500">Daily Bonus</div>
+            <div className="text-xl font-semibold text-emerald-300">+1 spin</div>
+            <p className="text-xs text-zinc-500">Claimed automatically on your first spin of the day.</p>
+          </div>
+          <div className="rounded-xl border border-zinc-800/60 bg-black/40 p-3">
+            <div className="text-xs uppercase text-zinc-500">Streak Rewards</div>
+            <ul className="mt-2 space-y-1 text-xs">
+              <li>🔥 5 streak — confetti + sound</li>
+              <li>⚡ 10 streak — bonus leaderboard shoutout</li>
+              <li>🏆 20 streak — hall of fame slot</li>
+            </ul>
+          </div>
+          <div className="rounded-xl border border-zinc-800/60 bg-black/40 p-3">
+            <div className="text-xs uppercase text-zinc-500">Portfolio Alerts</div>
+            <p className="text-xs text-zinc-500">Watchlisted coins will highlight in history when spun again.</p>
+          </div>
+          <div className="rounded-xl border border-zinc-800/60 bg-black/40 p-3">
+            <div className="text-xs uppercase text-zinc-500">Export & Save</div>
+            <button onClick={generateScreenshot} className="mt-2 w-full rounded-full border border-purple-400/60 px-4 py-2 text-xs text-purple-200 hover:bg-purple-500/20">
+              Save Screenshot
+            </button>
+            <button onClick={sessionReplaying ? stopSessionReplay : startSessionReplay} className="mt-2 w-full rounded-full border border-zinc-700/60 px-4 py-2 text-xs text-zinc-300 hover:border-emerald-400/60">
+              {sessionReplaying ? "Stop Replay" : "Session Replay"}
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      {toast && (
+        <div className="fixed left-1/2 top-6 z-40 -translate-x-1/2 rounded-full border border-emerald-400/60 bg-black/70 px-6 py-3 text-sm text-emerald-200 shadow-lg">
+          {toast}
+        </div>
       )}
 
-      {/* Terminal Log */}
-      <section className="terminal" aria-label="Live log">
-        <div className="term-head">Terminal</div>
-        <div className="term-body" ref={termRef}>
-          {log.map((l, i) => (
-            <div className={`line ${l.type}`} key={`${l.type}-${i}`}>{l.t}</div>
+      {confetti && (
+        <div className="pointer-events-none fixed inset-0 z-30 overflow-hidden">
+          {Array.from({ length: 40 }).map((_, idx) => (
+            <span key={idx} className="confetti" style={{ ['--i' as const]: idx }} />
           ))}
         </div>
-      </section>
+      )}
 
-      {/* Toast */}
-      {toast && <div className="toast">{toast}</div>}
-
-      <footer className="foot">
-        <div>Casino vibes only — have fun. Made for <a href="https://zora.co" target="_blank" rel="noreferrer" className="zora-link">zora.co</a></div>
-        {uniqueStreak > 0 && (
-          <div className="footer-stats">
-            🎯 Current Streak: {uniqueStreak} unique {uniqueStreak === 1 ? 'coin' : 'coins'}
-            {uniqueStreak >= 10 && ' 🏆'}
-            {uniqueStreak >= 20 && ' 🔥🔥🔥'}
-          </div>
-        )}
-      </footer>
-
-      {/* --- styles: styled-jsx global (reset/theme) --- */}
-      <style jsx global>{`
-        :root {
-          --bg1: #000000;
-          --bg2: #0a0a0a;
-          --text: #ffffff;
-          --dim: #a1a1aa;
-          --panel: rgba(255,255,255,0.03);
-          --panel-brd: rgba(255,255,255,0.08);
-          --glow: rgba(255,255,255,0.05);
-          --buy: #10b981;
-          --sell: #ef4444;
-          --accent: #ffffff;
-          --accent-dim: #71717a;
-        }
-        * { box-sizing: border-box; }
-        html, body { height: 100%; }
-        body {
-          margin: 0;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-          color: var(--text);
-          background: var(--bg1);
-        }
-      `}</style>
-
-      {/* --- styles: page --- */}
-      <style jsx>{`
-        .screen {
-          min-height: 100vh;
-          background: #000000;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          padding: 40px 20px;
-        }
-
-        .header { text-align: center; margin-bottom: 24px; }
-        .title {
-          font-size: 32px;
-          font-weight: 700;
-          letter-spacing: -0.02em;
-          color: #ffffff;
-          margin: 0;
-        }
-        .emoji { margin-right: 8px; }
-        .subtitle {
-          margin-top: 8px;
-          font-size: 14px;
-          color: var(--dim);
-          font-weight: 400;
-        }
-
-        .roulette { margin: 32px 0; }
-        .wheel {
-          position: relative;
-          width: 320px;
-          height: 320px;
-          perspective: 1000px;
-          transform-style: preserve-3d;
-          transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-        .wheel.spinning {
-          animation: spin 1.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-        @keyframes spin {
-          0% { transform: rotate(0deg) scale(1); }
-          50% { transform: rotate(360deg) scale(1.05); }
-          100% { transform: rotate(720deg) scale(1); }
-        }
-
-        .ring {
-          position: absolute;
-          inset: 0;
-          border-radius: 9999px;
-          background:
-            conic-gradient(
-              from 0deg,
-              #ffffff 0deg 20deg,
-              #e5e5e5 20deg 40deg,
-              #d4d4d4 40deg 60deg,
-              #a3a3a3 60deg 80deg,
-              #737373 80deg 100deg,
-              #525252 100deg 120deg,
-              #404040 120deg 140deg,
-              #262626 140deg 160deg,
-              #171717 160deg 180deg,
-              #ffffff 180deg 200deg,
-              #e5e5e5 200deg 220deg,
-              #d4d4d4 220deg 240deg,
-              #a3a3a3 240deg 260deg,
-              #737373 260deg 280deg,
-              #525252 280deg 300deg,
-              #404040 300deg 320deg,
-              #262626 320deg 340deg,
-              #171717 340deg 360deg
-            );
-          border: 2px solid #ffffff;
-          box-shadow:
-            inset 0 0 40px rgba(0, 0, 0, 0.5),
-            0 0 60px rgba(255, 255, 255, 0.1),
-            0 8px 32px rgba(0, 0, 0, 0.4);
-        }
-        .center {
-          position: absolute; inset: 0;
-          display: flex; align-items: center; justify-content: center;
-        }
-        .center::before {
-          content: "";
-          width: 180px;
-          height: 180px;
-          border-radius: 9999px;
-          background: #000000;
-          border: 3px solid #ffffff;
-          box-shadow:
-            0 0 0 8px rgba(255, 255, 255, 0.1),
-            0 8px 32px rgba(0, 0, 0, 0.6),
-            inset 0 2px 8px rgba(255, 255, 255, 0.1);
-          position: absolute;
-        }
-        .center-copy { position: relative; text-align: center; z-index: 2; }
-        .mode-label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
-        .mode-value { margin-top: 6px; font-weight: 700; font-size: 16px; color: #ffffff; }
-        .spins { margin-top: 10px; font-size: 13px; color: var(--dim); font-weight: 500; }
-        .streak {
-          margin-top: 6px;
-          font-size: 16px;
-          font-weight: 900;
-          color: #fbbf24;
-          filter: drop-shadow(0 0 12px rgba(251,191,36,0.6));
-          animation: pulse 1.5s ease-in-out infinite;
-        }
-        @keyframes pulse {
-          0%, 100% { transform: scale(1); opacity: 1; }
-          50% { transform: scale(1.1); opacity: 0.9; }
-        }
-
-        .pointer {
-          position: absolute;
-          top: -16px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 0;
-          height: 0;
-          border-left: 14px solid transparent;
-          border-right: 14px solid transparent;
-          border-bottom: 20px solid #ffffff;
-          filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
-        }
-
-        .mode-selector {
-          margin: 24px 0 16px;
-          display: flex;
-          gap: 8px;
-          padding: 4px;
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 12px;
-        }
-        .mode-btn {
-          appearance: none;
-          border: 0;
-          padding: 10px 20px;
-          border-radius: 8px;
-          font-size: 14px;
-          font-weight: 600;
-          background: transparent;
-          color: var(--dim);
-          cursor: pointer;
-          transition: all 0.2s ease;
-        }
-        .mode-btn:hover:not(:disabled) {
-          background: rgba(255,255,255,0.08);
-          color: var(--text);
-        }
-        .mode-btn.active {
-          background: #ffffff;
-          color: #000000;
-        }
-        .mode-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .stats-bar {
-          margin-top: 20px;
-          display: flex;
-          gap: 12px;
-          padding: 12px 16px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 12px;
-        }
-        .stat-item {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          align-items: center;
-          padding: 6px 12px;
-          border-radius: 8px;
-          background: rgba(0,0,0,0.2);
-          min-width: 90px;
-        }
-        .stat-item.highlight {
-          background: rgba(251,191,36,0.15);
-          border: 1px solid rgba(251,191,36,0.3);
-        }
-        .stat-label {
-          font-size: 10px;
-          color: var(--dim);
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          font-weight: 600;
-        }
-        .stat-value {
-          font-size: 18px;
-          font-weight: 900;
-          color: var(--text);
-        }
-        .stat-item.highlight .stat-value {
-          color: #fbbf24;
-        }
-        @media (max-width: 420px) {
-          .stats-bar {
-            flex-direction: column;
-            gap: 8px;
-          }
-          .stat-item {
-            flex-direction: row;
-            justify-content: space-between;
-            min-width: auto;
-            width: 100%;
-          }
-        }
-
-        .toolbar {
-          margin-top: 22px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 18px;
-          flex-wrap: wrap;
-        }
-        .actions { display: flex; gap: 10px; }
-        .toggles { display: flex; gap: 10px; align-items: center; }
-        .toggle { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); }
-
-        .btn {
-          appearance: none;
-          border: 0;
-          padding: 14px 28px;
-          border-radius: 12px;
-          font-size: 15px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.2s ease;
-        }
-        .btn.primary {
-          background: #ffffff;
-          color: #000000;
-          border: 2px solid #ffffff;
-        }
-        .btn.primary:hover:not(:disabled) {
-          background: #f4f4f5;
-          transform: translateY(-2px);
-          box-shadow: 0 8px 24px rgba(255,255,255,0.2);
-        }
-        .btn.primary:active {
-          transform: translateY(0);
-        }
-        .btn.primary.busy {
-          opacity: 0.7;
-          cursor: not-allowed;
-        }
-
-        .btn.secondary {
-          background: transparent;
-          color: #ffffff;
-          border: 2px solid rgba(255,255,255,0.2);
-        }
-        .btn.secondary:hover:not(:disabled) {
-          border-color: #ffffff;
-          background: rgba(255,255,255,0.1);
-        }
-        .btn.ghost {
-          background: transparent;
-          color: var(--dim);
-          border: 1px solid rgba(255,255,255,0.1);
-          padding: 10px 16px;
-          font-size: 13px;
-        }
-        .btn.ghost:hover {
-          border-color: rgba(255,255,255,0.3);
-          color: var(--text);
-        }
-
-        .error {
-          margin-top: 24px;
-          color: #fca5a5;
-          background: rgba(239,68,68,0.1);
-          border: 1px solid rgba(239,68,68,0.2);
-          padding: 16px 20px;
-          border-radius: 12px;
-          font-size: 14px;
-          max-width: 900px;
-          width: 100%;
-          text-align: center;
-        }
-
-        .comparison {
-          margin-top: 24px;
-          width: 100%;
-          max-width: 900px;
-          padding: 20px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 12px;
-          animation: slideIn 0.4s ease;
-        }
-        @keyframes slideIn {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        .comparison-title {
-          font-size: 14px;
-          font-weight: 600;
-          color: var(--dim);
-          margin-bottom: 12px;
-        }
-        .comparison-grid {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 16px;
-        }
-        .comparison-item {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .comparison-label {
-          font-size: 12px;
-          color: var(--dim);
-          font-weight: 500;
-        }
-        .comparison-value {
-          font-size: 15px;
-          font-weight: 600;
-        }
-        .comparison-value.up {
-          color: #10b981;
-        }
-        .comparison-value.down {
-          color: #ef4444;
-        }
-        @media (max-width: 600px) {
-          .comparison-grid {
-            grid-template-columns: 1fr;
-            gap: 12px;
-          }
-        }
-
-        .card {
-          margin-top: 32px;
-          width: 100%;
-          max-width: 900px;
-          border-radius: 16px;
-          border: 1px solid rgba(255,255,255,0.1);
-          background: rgba(255,255,255,0.03);
-          padding: 24px;
-          transition: all 0.3s ease;
-        }
-        .card:hover {
-          border-color: rgba(255,255,255,0.2);
-          background: rgba(255,255,255,0.05);
-        }
-        .card-row {
-          display: flex; align-items: center; justify-content: space-between; gap: 12px;
-        }
-        .coin-name { 
-          font-size: 18px; 
-          font-weight: 800; 
-          letter-spacing: .2px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-        .symbol { color: #a9c7ff; font-weight: 700; }
-        .sentiment-badge {
-          font-size: 11px;
-          font-weight: 700;
-          padding: 4px 8px;
-          border-radius: 6px;
-          display: inline-flex;
-          align-items: center;
-          gap: 3px;
-        }
-        .sentiment-badge.bullish {
-          background: rgba(34,197,94,0.15);
-          color: #86efac;
-          border: 1px solid rgba(34,197,94,0.3);
-        }
-        .sentiment-badge.bearish {
-          background: rgba(239,68,68,0.15);
-          color: #fca5a5;
-          border: 1px solid rgba(239,68,68,0.3);
-        }
-        .sentiment-badge.neutral {
-          background: rgba(148,163,184,0.15);
-          color: #cbd5e1;
-          border: 1px solid rgba(148,163,184,0.3);
-        }
-        .rarity-badge {
-          font-size: 11px;
-          font-weight: 700;
-          padding: 4px 8px;
-          border-radius: 6px;
-          display: inline-flex;
-          align-items: center;
-          gap: 3px;
-        }
-        .rarity-badge.rare {
-          background: rgba(139,92,246,0.15);
-          color: #c4b5fd;
-          border: 1px solid rgba(139,92,246,0.3);
-        }
-        .rarity-badge.popular {
-          background: rgba(251,191,36,0.15);
-          color: #fde68a;
-          border: 1px solid rgba(251,191,36,0.3);
-        }
-        .address { margin-top: 4px; font-size: 12px; color: var(--dim); word-break: break-all; }
-        .link { font-size: 12px; color: #89e6ff; text-decoration: underline; }
-
-        .activity-stats {
-          margin-top: 12px;
-          padding-top: 12px;
-          border-top: 1px solid rgba(255,255,255,0.08);
-          display: flex;
-          gap: 16px;
-          font-size: 12px;
-          color: var(--dim);
-          flex-wrap: wrap;
-        }
-        .activity-stats span {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-        }
-
-        .grid {
-          margin-top: 14px;
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0,1fr));
-          gap: 12px;
-        }
-        @media (max-width: 760px) {
-          .grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
-        }
-        @media (max-width: 420px) {
-          .grid { grid-template-columns: 1fr; }
-        }
-        .metric {
-          border-radius: 14px;
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
-          padding: 10px 12px;
-        }
-        .label { font-size: 12px; color: var(--dim); }
-        .value { margin-top: 6px; font-weight: 800; }
-        .value.cyan { color: #99f6ff; }
-        .value.pink { color: #ffc2f1; }
-        .value.yellow { color: #ffe39b; }
-        .value.green { color: #a7f3d0; }
-        .value.red { color: #fca5a5; }
-
-        .created { margin-top: 10px; font-size: 12px; color: var(--dim); }
-
-        /* Panel (Swaps / Holders) */
-        .panel {
-          margin-top: 24px;
-          width: 100%;
-          max-width: 900px;
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 16px;
-          background: rgba(255,255,255,0.03);
-          overflow: hidden;
-          transition: all 0.3s ease;
-        }
-        .panel:hover {
-          border-color: rgba(255,255,255,0.2);
-        }
-        .panel-head {
-          padding: 16px 20px;
-          font-size: 15px;
-          font-weight: 600;
-          color: #ffffff;
-          background: rgba(255,255,255,0.03);
-          border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
-        .panel-foot {
-          padding: 10px 12px;
-          font-size: 12px;
-          color: var(--dim);
-          border-top: 1px solid rgba(255,255,255,0.06);
-          background: rgba(255,255,255,0.03);
-        }
-
-        /* Swaps Table */
-        .table { width: 100%; }
-        .row {
-          display: grid;
-          grid-template-columns: 44px 100px 1fr 140px 120px 80px;
-          gap: 8px;
-          padding: 8px 12px;
-          align-items: center;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .row:last-child { border-bottom: 0; }
-        .row.head {
-          background: rgba(255,255,255,0.04);
-          font-size: 12px;
-          color: var(--dim);
-          font-weight: 700;
-        }
-        .cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .cell.idx { color: var(--dim); }
-        .cell.side { font-weight: 800; letter-spacing: .3px; }
-        .tag {
-          display: inline-flex; align-items: center; justify-content: center;
-          padding: 6px 10px; border-radius: 10px;
-          width: 90px;
-          color: #001510;
-        }
-        .buy { background: var(--buy); }
-        .sell { background: var(--sell); color: #240000; }
-        .amt, .addr { font-weight: 700; }
-        .addr { font-size: 11px; font-family: ui-monospace, monospace; }
-
-        @media (max-width: 760px) {
-          .row { grid-template-columns: 32px 84px 1fr 110px 100px 70px; }
-        }
-        @media (max-width: 520px) {
-          .row { grid-template-columns: 28px 84px 1fr 100px; }
-          .cell.date, .cell.time { display: none; }
-        }
-
-        /* Holders Bars - Simplified & Clear Colors */
-        .bars { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
-        .bar-row { 
-          display: grid; 
-          grid-template-columns: 180px 1fr; 
-          gap: 12px; 
-          align-items: center;
-          padding: 6px;
-          border-radius: 8px;
-          transition: all 0.2s ease;
-        }
-        .bar-row:hover { 
-          background: rgba(34,211,238,0.08);
-          transform: translateX(2px);
-        }
-        .bar-row.top-holder {
-          background: rgba(250,204,21,0.1);
-          border-left: 3px solid #fbbf24;
-          padding-left: 9px;
-        }
-        .bar-row.top-holder:hover {
-          background: rgba(250,204,21,0.15);
-        }
-        .bar-label { 
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 13px; 
-          font-weight: 600;
-          overflow: hidden;
-        }
-        .rank { 
-          color: #64748b; 
-          min-width: 18px;
-          font-weight: 700;
-        }
-        .bar-row.top-holder .rank { color: #fbbf24; }
-        .crown { font-size: 16px; filter: drop-shadow(0 0 4px rgba(251,191,36,0.6)); }
-        .addr { 
-          color: #cbd5e1;
-          overflow: hidden; 
-          text-overflow: ellipsis; 
-          white-space: nowrap; 
-        }
-        .bar-row.top-holder .addr { color: #fef3c7; }
-        .bar-track {
-          position: relative;
-          height: 36px;
-          border-radius: 8px;
-          background: rgba(15,23,42,0.6);
-          border: 1px solid rgba(148,163,184,0.2);
-          overflow: visible;
-        }
-        .bar-fill {
-          position: absolute; 
-          left: 0; 
-          top: 0; 
-          bottom: 0;
-          background: linear-gradient(90deg, #06b6d4 0%, #0891b2 100%);
-          border-radius: 7px;
-          box-shadow: 
-            0 0 20px rgba(6,182,212,0.3) inset,
-            0 2px 8px rgba(6,182,212,0.4);
-          transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .bar-row.top-holder .bar-fill {
-          background: linear-gradient(90deg, #fbbf24 0%, #f59e0b 100%);
-          box-shadow: 
-            0 0 20px rgba(251,191,36,0.4) inset,
-            0 2px 8px rgba(251,191,36,0.5);
-        }
-        .bar-stats {
-          position: absolute; 
-          right: 10px; 
-          top: 50%; 
-          transform: translateY(-50%);
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          font-size: 12px;
-          z-index: 2;
-        }
-        .bar-balance {
-          color: #94a3b8;
-          font-weight: 600;
-          background: rgba(15,23,42,0.8);
-          padding: 2px 6px;
-          border-radius: 4px;
-        }
-        .bar-percentage {
-          color: #f0f9ff; 
-          font-weight: 800;
-          font-size: 14px;
-          text-shadow: 
-            0 1px 3px rgba(0,0,0,0.8),
-            0 0 10px rgba(6,182,212,0.5);
-        }
-        .bar-row.top-holder .bar-percentage {
-          text-shadow: 
-            0 1px 3px rgba(0,0,0,0.8),
-            0 0 10px rgba(251,191,36,0.6);
-        }
-        @media (max-width: 640px) {
-          .bar-row { grid-template-columns: 140px 1fr; }
-          .bar-balance { display: none; }
-          .bar-stats { right: 6px; }
-        }
-
-        /* Terminal */
-        .terminal {
-          margin-top: 24px;
-          width: 100%;
-          max-width: 900px;
-          border: 1px solid var(--panel-brd);
-          border-radius: 12px;
-          background: rgba(2,6,15,0.6);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
-          overflow: hidden;
-        }
-        .term-head {
-          padding: 10px 12px;
-          font-size: 12px;
-          color: var(--dim);
-          background: rgba(255,255,255,0.04);
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .term-body {
-          max-height: 240px;
-          overflow: auto;
-          padding: 10px 12px;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-          font-size: 12px;
-          line-height: 1.45;
-        }
-        .line { padding: 2px 0; }
-        .line.ok { color: #b1f0c9; }
-        .line.warn { color: #fca5a5; }
-        .line.info { color: #9fb2c5; }
-
-        .toast {
-          position: fixed;
-          bottom: 16px;
-          right: 16px;
-          background: rgba(0,0,0,0.75);
-          color: #e6f0ff;
-          padding: 10px 12px;
-          border: 1px solid rgba(255,255,255,0.2);
-          border-radius: 10px;
-          font-size: 12px;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-          animation: toast-in .18s ease;
-        }
-        @keyframes toast-in {
-          from { transform: translateY(6px); opacity: 0; }
-          to { transform: translateY(0); opacity: 1; }
-        }
-
-        .foot {
-          margin-top: 18px;
-          font-size: 12px;
-          color: var(--dim);
-          text-align: center;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .zora-link {
-          color: #22d3ee;
-          text-decoration: none;
-          font-weight: 600;
-          transition: all 0.2s ease;
-        }
-        .zora-link:hover {
-          color: #a855f7;
-          text-decoration: underline;
-        }
-        .footer-stats {
-          font-size: 13px;
-          color: #fbbf24;
-          font-weight: 700;
-          padding: 6px 12px;
-          background: rgba(251,191,36,0.1);
-          border-radius: 8px;
-          border: 1px solid rgba(251,191,36,0.2);
-          display: inline-block;
-        }
-      `}</style>
+      <div
+        className={`fixed bottom-0 left-0 right-0 z-30 border-t border-zinc-800/60 bg-black/80 p-4 text-sm text-zinc-200 shadow-2xl transition-transform duration-300 lg:hidden ${
+          showDetailsSheet ? "translate-y-0" : "translate-y-[80%]"
+        }`}
+      >
+        <div className="mx-auto max-w-3xl">
+          <button className="mb-2 flex w-full items-center justify-between" onClick={() => setShowDetailsSheet((v) => !v)}>
+            <span className="text-xs uppercase text-zinc-500">Details</span>
+            <span>{showDetailsSheet ? "▼" : "▲"}</span>
+          </button>
+          {data ? (
+            <div className="space-y-2 text-xs">
+              <div className="text-sm font-semibold">{data.coin.name}</div>
+              <div>Market cap: {compact(data.coin.marketCap)}</div>
+              <div>Volume: {compact(data.coin.volume24h)}</div>
+              <div>Holders: {compact(data.coin.uniqueHolders)}</div>
+              <div>Sentiment: {data.stats?.sentiment} {getSentimentEmoji(data.stats?.sentiment)}</div>
+            </div>
+          ) : (
+            <p className="text-xs text-zinc-500">Spin the wheel to load coin data.</p>
+          )}
+        </div>
+      </div>
     </main>
   );
 }
